@@ -151,7 +151,10 @@ func main() {
 	url := "http://" + ln.Addr().String()
 	fmt.Println("CleanProjects web UI:", url)
 	if os.Getenv("CLEAN_PROJECTS_NO_OPEN") != "1" {
-		openBrowser(url)
+		go func() {
+			time.Sleep(350 * time.Millisecond)
+			openBrowser(url)
+		}()
 	}
 	log.Fatal(http.Serve(ln, mux))
 }
