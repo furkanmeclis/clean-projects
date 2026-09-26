@@ -14,11 +14,13 @@ import {
   HardDrive,
   History,
   Loader2,
+  Power,
   RefreshCw,
   RotateCcw,
   Search,
   ShieldCheck,
   Sparkles,
+  Terminal,
   Trash2,
   X,
 } from "lucide-react";
@@ -53,11 +55,14 @@ const copy = {
     protected: "iCloud Drive ve Library/Mobile Documents kilitli koruma listesinde.",
     scan: "Yeniden tara",
     delete: "Temizliği başlat",
+    shutdown: "Uygulamayı kapat",
+    terminal: "İşlem günlüğü",
+    terminalHint: "Silme işlemi sırasında çalışan komutları ve sonuçları buradan izleyebilirsin.",
     cancel: "Vazgeç",
     confirmDelete: "Seçili temizlik çalıştırılsın mı?",
-    confirmBody: "Bu işlem geri alınamaz. Yüksek riskli app verilerinde ilgili uygulamayı kapatman önerilir.",
+    confirmBody: "Bu işlem geri alınamaz. Yüksek riskli uygulama verilerini temizlemeden önce ilgili uygulamayı kapatman önerilir.",
     free: "Boş alan",
-    recoverable: "Temizlenebilir",
+    recoverable: "Kazanılabilir alan",
     selected: "Seçili",
     ignored: "Saf dışı",
     overview: "Genel Bakış",
@@ -71,7 +76,7 @@ const copy = {
     storageTrend: "Depolama Profili",
     largest: "En büyük alanlar",
     distribution: "Tür dağılımı",
-    cleanupQueue: "Temizlik kuyruğu",
+    cleanupQueue: "Temizlik adayları",
     path: "Yol / Komut",
     kind: "Tür",
     risk: "Risk",
@@ -82,6 +87,7 @@ const copy = {
     clean: "Temiz",
     noHistory: "Henüz temizlik yapılmadı.",
     done: "Temizlik tamamlandı.",
+    shutdownDone: "Uygulama kapatılıyor. Bu sekmeyi kapatabilirsin.",
     analyzingTitle: "Disk haritası çıkarılıyor",
     analyzingBody: "Geliştirici cache'leri, proje çıktıları ve mobil runtime alanları güvenlik kurallarıyla ölçülüyor.",
     step1: "iCloud yolları korunuyor",
@@ -97,11 +103,14 @@ const copy = {
     protected: "iCloud Drive and Library/Mobile Documents are locked in the protection list.",
     scan: "Scan again",
     delete: "Start cleanup",
+    shutdown: "Quit app",
+    terminal: "Activity log",
+    terminalHint: "Watch cleanup commands and results while the job is running.",
     cancel: "Cancel",
     confirmDelete: "Run selected cleanup?",
     confirmBody: "This cannot be undone. Close related apps before deleting high-risk app data.",
     free: "Free space",
-    recoverable: "Recoverable",
+    recoverable: "Recoverable space",
     selected: "Selected",
     ignored: "Excluded",
     overview: "Overview",
@@ -126,6 +135,7 @@ const copy = {
     clean: "Clean",
     noHistory: "No cleanup history yet.",
     done: "Cleanup complete.",
+    shutdownDone: "App is shutting down. You can close this tab.",
     analyzingTitle: "Mapping your disk",
     analyzingBody: "Developer caches, project outputs, and mobile runtime areas are measured with safety rules.",
     step1: "Protecting iCloud paths",
@@ -144,6 +154,8 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState("active");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalLines, setTerminalLines] = useState([]);
   const [notice, setNotice] = useState("");
   const [lang, setLang] = useState(localStorage.getItem("cleanProjectsLang") || "tr");
   const t = copy[lang];
@@ -216,6 +228,8 @@ function App() {
 
   const runDelete = async () => {
     setDialogOpen(false);
+    setTerminalOpen(true);
+    setTerminalLines([]);
     setBusy(true);
     const res = await fetch("/api/delete", {
       method: "POST",
@@ -223,10 +237,46 @@ function App() {
       body: JSON.stringify({ ids: selectedItems.map((x) => x.id) }),
     });
     const data = await res.json();
-    setSelected(new Set());
-    setScan(data.scan);
-    setNotice(t.done);
-    setBusy(false);
+    const events = new EventSource(`/api/jobs/${data.jobId}/events`);
+    events.onmessage = (event) => {
+      if (!event.data) return;
+      const payload = JSON.parse(event.data);
+      setTerminalLines((lines) => [...lines, payload]);
+      if (payload.type === "done") {
+        events.close();
+        setSelected(new Set());
+        load();
+        setNotice(t.done);
+        setBusy(false);
+      }
+    };
+    events.addEventListener("info", appendTerminalLine);
+    events.addEventListener("start", appendTerminalLine);
+    events.addEventListener("output", appendTerminalLine);
+    events.addEventListener("success", appendTerminalLine);
+    events.addEventListener("error", appendTerminalLine);
+    events.addEventListener("done", (event) => {
+      appendTerminalLine(event);
+      events.close();
+      setSelected(new Set());
+      load();
+      setNotice(t.done);
+      setBusy(false);
+    });
+    events.onerror = () => {
+      events.close();
+      setBusy(false);
+    };
+  };
+
+  const appendTerminalLine = (event) => {
+    if (!event.data) return;
+    setTerminalLines((lines) => [...lines, JSON.parse(event.data)]);
+  };
+
+  const shutdownApp = async () => {
+    await fetch("/api/shutdown", { method: "POST" });
+    setNotice(t.shutdownDone);
   };
 
   if (!scan) return <AnalysisScreen t={t} />;
@@ -270,6 +320,7 @@ function App() {
           </div>
           <div className="header-actions">
             <Button variant="outline" onClick={() => setLanguage(lang === "tr" ? "en" : "tr")}><Globe2 size={16} /> {lang.toUpperCase()}</Button>
+            <Button variant="outline" onClick={shutdownApp}><Power size={16} /> {t.shutdown}</Button>
             <Button onClick={load} disabled={busy}><RefreshCw size={16} /> {t.scan}</Button>
           </div>
         </header>
@@ -379,6 +430,29 @@ function App() {
         </Dialog>
       )}
 
+      {terminalOpen && (
+        <Dialog onClose={() => !busy && setTerminalOpen(false)} wide>
+          <div className="terminal-header">
+            <div className="dialog-icon"><Terminal size={22} /></div>
+            <div>
+              <h2>{t.terminal}</h2>
+              <p>{t.terminalHint}</p>
+            </div>
+          </div>
+          <div className="terminal-panel">
+            {terminalLines.length === 0 && <pre><span>00:00:00</span> waiting for cleanup job...</pre>}
+            {terminalLines.map((line, index) => (
+              <pre key={`${line.time}-${index}`} className={`term-${line.type}`}>
+                <span>{line.time}</span> {line.label ? `[${line.label}] ` : ""}{line.message}{line.size ? ` (${line.size})` : ""}
+              </pre>
+            ))}
+          </div>
+          <div className="dialog-actions">
+            <Button variant="outline" disabled={busy} onClick={() => setTerminalOpen(false)}>{t.cancel}</Button>
+          </div>
+        </Dialog>
+      )}
+
       {busy && <div className="floating-status"><Loader2 className="spin" size={16} /> {t.step2}</div>}
       {notice && <div className="toast"><Check size={16} /> {notice}</div>}
     </main>
@@ -445,10 +519,10 @@ function Segmented({ value, onChange, items }) {
   return <div className="segmented">{items.map(([id, label]) => <button key={id} className={value === id ? "active" : ""} onClick={() => onChange(id)}>{label}</button>)}</div>;
 }
 
-function Dialog({ children, onClose }) {
+function Dialog({ children, onClose, wide = false }) {
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
-      <div className="dialog" onMouseDown={(event) => event.stopPropagation()}>
+      <div className={`dialog ${wide ? "wide" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
         <button className="dialog-close" onClick={onClose}><X size={16} /></button>
         {children}
       </div>

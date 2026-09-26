@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -91,6 +92,23 @@ type ExclusionRequest struct {
 	Excluded bool   `json:"excluded"`
 }
 
+type CleanupJob struct {
+	ID      string     `json:"id"`
+	Events  []JobEvent `json:"events"`
+	Done    bool       `json:"done"`
+	Success bool       `json:"success"`
+	mu      sync.Mutex
+	cond    *sync.Cond
+}
+
+type JobEvent struct {
+	Time    string `json:"time"`
+	Type    string `json:"type"`
+	Message string `json:"message"`
+	Label   string `json:"label,omitempty"`
+	Size    string `json:"size,omitempty"`
+}
+
 var (
 	homeDir, _       = os.UserHomeDir()
 	documentsDir     = filepath.Join(homeDir, "Documents")
@@ -104,6 +122,12 @@ var (
 		"node_modules": true, ".next": true, ".nuxt": true, ".turbo": true,
 		".expo": true, ".tamagui": true, "target": true, ".venv": true, "venv": true,
 	}
+	jobsMu sync.Mutex
+	jobs   = map[string]*CleanupJob{}
+
+	scanMu   sync.Mutex
+	lastScan ScanResponse
+	hasScan  bool
 )
 
 func main() {
@@ -111,6 +135,8 @@ func main() {
 	mux.HandleFunc("/api/scan", handleScan)
 	mux.HandleFunc("/api/delete", handleDelete)
 	mux.HandleFunc("/api/exclusion", handleExclusion)
+	mux.HandleFunc("/api/jobs/", handleJobEvents)
+	mux.HandleFunc("/api/shutdown", handleShutdown)
 	mux.HandleFunc("/api/state", handleState)
 	mux.HandleFunc("/", handleStatic)
 
@@ -124,12 +150,16 @@ func main() {
 	}
 	url := "http://" + ln.Addr().String()
 	fmt.Println("CleanProjects web UI:", url)
-	openBrowser(url)
+	if os.Getenv("CLEAN_PROJECTS_NO_OPEN") != "1" {
+		openBrowser(url)
+	}
 	log.Fatal(http.Serve(ln, mux))
 }
 
 func handleScan(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, scan())
+	result := scan()
+	setCachedScan(result)
+	writeJSON(w, result)
 }
 
 func handleState(w http.ResponseWriter, r *http.Request) {
@@ -148,49 +178,29 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	current := scan()
+	current, ok := getCachedScan()
+	if !ok {
+		current = scan()
+		setCachedScan(current)
+	}
 	byID := map[string]Candidate{}
 	for _, c := range current.Candidates {
 		byID[c.ID] = c
 	}
 
-	results := make([]DeleteResult, 0, len(req.IDs))
-	historyItems := []HistoryItem{}
-	var totalDeleted int64
+	targets := []Candidate{}
 	for _, id := range req.IDs {
 		c, ok := byID[id]
-		if !ok {
-			results = append(results, DeleteResult{ID: id, OK: false, Error: "candidate not found"})
-			continue
+		if ok && c.Available {
+			targets = append(targets, c)
 		}
-		res := DeleteResult{ID: id, Label: c.Label, Before: c.SizeHuman}
-		if !c.Available {
-			res.OK = true
-			results = append(results, res)
-			continue
-		}
-		if err := deleteCandidate(c); err != nil {
-			res.Error = err.Error()
-		} else {
-			res.OK = true
-			totalDeleted += c.SizeBytes
-			historyItems = append(historyItems, HistoryItem{
-				ID: id, Label: c.Label, Path: c.Path, Kind: c.Kind,
-				SizeBytes: c.SizeBytes, SizeHuman: c.SizeHuman,
-			})
-		}
-		results = append(results, res)
-	}
-	if len(historyItems) > 0 {
-		appendHistory(HistoryEntry{
-			Time:       time.Now().Format(time.RFC3339),
-			TotalBytes: totalDeleted,
-			TotalHuman: human(totalDeleted),
-			Items:      historyItems,
-		})
 	}
 
-	writeJSON(w, map[string]any{"results": results, "scan": scan()})
+	job := newCleanupJob()
+	registerJob(job)
+	go runCleanupJob(job, targets)
+
+	writeJSON(w, map[string]any{"jobId": job.ID})
 }
 
 func handleExclusion(w http.ResponseWriter, r *http.Request) {
@@ -217,6 +227,58 @@ func handleExclusion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"state": state, "scan": scan()})
+}
+
+func handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "message": "CleanProjects is shutting down"})
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		os.Exit(0)
+	}()
+}
+
+func handleJobEvents(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasSuffix(r.URL.Path, "/events") {
+		http.NotFound(w, r)
+		return
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/jobs/"), "/events")
+	job := getJob(id)
+	if job == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	index := 0
+	for {
+		job.mu.Lock()
+		for index >= len(job.Events) && !job.Done {
+			job.cond.Wait()
+		}
+		for index < len(job.Events) {
+			writeSSE(w, job.Events[index])
+			index++
+		}
+		done := job.Done
+		job.mu.Unlock()
+		flusher.Flush()
+		if done {
+			return
+		}
+	}
 }
 
 func handleStatic(w http.ResponseWriter, r *http.Request) {
@@ -249,6 +311,19 @@ func scan() ScanResponse {
 		GeneratedAt: time.Now().Format(time.RFC3339),
 		State:       state,
 	}
+}
+
+func setCachedScan(result ScanResponse) {
+	scanMu.Lock()
+	defer scanMu.Unlock()
+	lastScan = result
+	hasScan = true
+}
+
+func getCachedScan() (ScanResponse, bool) {
+	scanMu.Lock()
+	defer scanMu.Unlock()
+	return lastScan, hasScan
 }
 
 func statePath() string {
@@ -288,6 +363,98 @@ func appendHistory(entry HistoryEntry) {
 		state.History = state.History[:100]
 	}
 	_ = saveState(state)
+}
+
+func newCleanupJob() *CleanupJob {
+	job := &CleanupJob{ID: idFor(fmt.Sprintf("%d", time.Now().UnixNano()))}
+	job.cond = sync.NewCond(&job.mu)
+	return job
+}
+
+func registerJob(job *CleanupJob) {
+	jobsMu.Lock()
+	defer jobsMu.Unlock()
+	jobs[job.ID] = job
+}
+
+func getJob(id string) *CleanupJob {
+	jobsMu.Lock()
+	defer jobsMu.Unlock()
+	return jobs[id]
+}
+
+func (job *CleanupJob) log(eventType, message string, parts ...string) {
+	event := JobEvent{
+		Time:    time.Now().Format("15:04:05"),
+		Type:    eventType,
+		Message: message,
+	}
+	if len(parts) > 0 {
+		event.Label = parts[0]
+	}
+	if len(parts) > 1 {
+		event.Size = parts[1]
+	}
+	job.mu.Lock()
+	job.Events = append(job.Events, event)
+	job.mu.Unlock()
+	job.cond.Broadcast()
+}
+
+func (job *CleanupJob) finish(success bool) {
+	job.mu.Lock()
+	job.Done = true
+	job.Success = success
+	job.mu.Unlock()
+	job.cond.Broadcast()
+}
+
+func writeSSE(w http.ResponseWriter, event JobEvent) {
+	data, _ := json.Marshal(event)
+	fmt.Fprintf(w, "event: %s\n", event.Type)
+	fmt.Fprintf(w, "data: %s\n\n", data)
+}
+
+func runCleanupJob(job *CleanupJob, targets []Candidate) {
+	job.log("info", fmt.Sprintf("Cleanup job %s started", job.ID))
+	job.log("info", fmt.Sprintf("%d item(s) queued", len(targets)))
+	if len(targets) == 0 {
+		job.log("done", "Nothing selected")
+		job.finish(true)
+		return
+	}
+
+	historyItems := []HistoryItem{}
+	var totalDeleted int64
+	success := true
+
+	for _, candidate := range targets {
+		job.log("start", "Starting", candidate.Label, candidate.SizeHuman)
+		if err := deleteCandidateWithLog(candidate, func(message string) {
+			job.log("output", message, candidate.Label)
+		}); err != nil {
+			success = false
+			job.log("error", err.Error(), candidate.Label)
+			continue
+		}
+		totalDeleted += candidate.SizeBytes
+		historyItems = append(historyItems, HistoryItem{
+			ID: candidate.ID, Label: candidate.Label, Path: candidate.Path, Kind: candidate.Kind,
+			SizeBytes: candidate.SizeBytes, SizeHuman: candidate.SizeHuman,
+		})
+		job.log("success", "Completed", candidate.Label, candidate.SizeHuman)
+	}
+
+	if len(historyItems) > 0 {
+		appendHistory(HistoryEntry{
+			Time:       time.Now().Format(time.RFC3339),
+			TotalBytes: totalDeleted,
+			TotalHuman: human(totalDeleted),
+			Items:      historyItems,
+		})
+	}
+	job.log("done", fmt.Sprintf("Cleanup finished. Estimated reclaimed: %s", human(totalDeleted)))
+	job.finish(success)
 }
 
 func scanProjectArtifacts(root string) []Candidate {
@@ -385,27 +552,45 @@ func scanSimulatorRuntimes() []Candidate {
 }
 
 func deleteCandidate(c Candidate) error {
+	return deleteCandidateWithLog(c, func(string) {})
+}
+
+func deleteCandidateWithLog(c Candidate, logf func(string)) error {
 	if c.Method == "remove" {
 		if c.Path == "" || isProtected(c.Path) {
 			return errors.New("protected path")
 		}
+		logf("remove " + c.Path)
 		return os.RemoveAll(c.Path)
 	}
 	switch {
 	case c.Method == "pnpm":
 		if _, err := exec.LookPath("pnpm"); err == nil {
-			return exec.Command("pnpm", "store", "prune").Run()
+			return runCommandWithLog(logf, "pnpm", "store", "prune")
 		}
+		logf("pnpm not found; removing store path directly")
 		return os.RemoveAll(c.Path)
 	case strings.HasPrefix(c.Method, "docker builder prune"):
-		return exec.Command("docker", "builder", "prune", "-af").Run()
+		return runCommandWithLog(logf, "docker", "builder", "prune", "-af")
 	case strings.HasPrefix(c.Method, "docker system prune"):
-		return exec.Command("docker", "system", "prune", "-af").Run()
+		return runCommandWithLog(logf, "docker", "system", "prune", "-af")
 	case strings.HasPrefix(c.Method, "xcrun simctl runtime delete "):
 		fields := strings.Fields(c.Method)
-		return exec.Command("xcrun", "simctl", "runtime", "delete", fields[len(fields)-1]).Run()
+		return runCommandWithLog(logf, "xcrun", "simctl", "runtime", "delete", fields[len(fields)-1])
 	}
 	return errors.New("unsupported delete method")
+}
+
+func runCommandWithLog(logf func(string), name string, args ...string) error {
+	logf("$ " + strings.Join(append([]string{name}, args...), " "))
+	cmd := exec.Command(name, args...)
+	output, err := cmd.CombinedOutput()
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if strings.TrimSpace(line) != "" {
+			logf(line)
+		}
+	}
+	return err
 }
 
 func makePathCandidate(label, path, kind, method, desc, risk string) Candidate {
