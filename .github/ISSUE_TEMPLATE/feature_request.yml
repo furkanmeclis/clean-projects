@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest a new cleanup rule or app improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What should CleanProjects do?
+      placeholder: Add detection for...
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety considerations
+      description: What should never be deleted? Can the data be regenerated?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Extra context
+

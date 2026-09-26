@@ -1,0 +1,22 @@
+# Local runtime output
+/clean-projects
+/clean-projects-*
+/clean-projects-state.json
+/clean-projects.log
+/clean-projects.pid
+
+# Frontend dependencies and build output
+/frontend/node_modules/
+/frontend/dist/
+
+# Generated embedded frontend assets
+/backend/static/*
+!/backend/static/placeholder.txt
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+
