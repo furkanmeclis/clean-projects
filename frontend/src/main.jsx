@@ -86,6 +86,8 @@ const copy = {
     restore: "Geri al",
     clean: "Temiz",
     noHistory: "Henüz temizlik yapılmadı.",
+    noCandidates: "Şu anda temizlenebilir aday yok.",
+    noCandidatesHint: "Disk zaten temiz görünüyor. Tümü sekmesinde daha önce temizlenmiş veya şu an mevcut olmayan hedefleri görebilirsin.",
     done: "Temizlik tamamlandı.",
     shutdownDone: "Uygulama kapatılıyor. Bu sekmeyi kapatabilirsin.",
     analyzingTitle: "Disk haritası çıkarılıyor",
@@ -134,6 +136,8 @@ const copy = {
     restore: "Restore",
     clean: "Clean",
     noHistory: "No cleanup history yet.",
+    noCandidates: "No cleanable candidates right now.",
+    noCandidatesHint: "Your disk looks clean. Open All to see targets that are already gone or currently unavailable.",
     done: "Cleanup complete.",
     shutdownDone: "App is shutting down. You can close this tab.",
     analyzingTitle: "Mapping your disk",
@@ -182,7 +186,7 @@ function App() {
   const visibleItems = useMemo(() => {
     const q = query.trim().toLowerCase();
     return candidates
-      .filter((c) => (view === "active" ? !c.excluded : view === "excluded" ? c.excluded : true))
+      .filter((c) => (view === "active" ? !c.excluded && c.available && c.sizeBytes > 0 : view === "excluded" ? c.excluded : true))
       .filter((c) => `${c.label} ${c.path} ${c.kind} ${c.description}`.toLowerCase().includes(q));
   }, [candidates, query, view]);
 
@@ -335,34 +339,38 @@ function App() {
         <section className="chart-grid">
           <Card title={t.storageTrend} icon={<AreaIcon size={16} />} className="wide">
             <div className="area-chart">
-              <ResponsiveContainer>
-                <AreaChart data={profile} margin={{ left: 4, right: 18, top: 16, bottom: 4 }}>
-                  <defs>
-                    <linearGradient id="orangeArea" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#f97316" stopOpacity={0.35} />
-                      <stop offset="95%" stopColor="#f97316" stopOpacity={0.02} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1e7dd" />
-                  <XAxis dataKey="index" tickLine={false} axisLine={false} tick={{ fill: "#78716c", fontSize: 12 }} />
-                  <YAxis tickLine={false} axisLine={false} tick={{ fill: "#78716c", fontSize: 12 }} tickFormatter={human} width={64} />
-                  <Tooltip formatter={(v) => human(v)} labelFormatter={(v) => `#${v}`} />
-                  <Area type="monotone" dataKey="size" stroke="#f97316" strokeWidth={3} fill="url(#orangeArea)" />
-                </AreaChart>
-              </ResponsiveContainer>
+              {profile.length > 0 ? (
+                <ResponsiveContainer>
+                  <AreaChart data={profile} margin={{ left: 4, right: 18, top: 16, bottom: 4 }}>
+                    <defs>
+                      <linearGradient id="orangeArea" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#f97316" stopOpacity={0.35} />
+                        <stop offset="95%" stopColor="#f97316" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1e7dd" />
+                    <XAxis dataKey="index" tickLine={false} axisLine={false} tick={{ fill: "#78716c", fontSize: 12 }} />
+                    <YAxis tickLine={false} axisLine={false} tick={{ fill: "#78716c", fontSize: 12 }} tickFormatter={human} width={64} />
+                    <Tooltip formatter={(v) => human(v)} labelFormatter={(v) => `#${v}`} />
+                    <Area type="monotone" dataKey="size" stroke="#f97316" strokeWidth={3} fill="url(#orangeArea)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : <EmptyChart t={t} />}
             </div>
           </Card>
 
           <Card title={t.distribution} icon={<Flame size={16} />}>
             <div className="donut">
-              <ResponsiveContainer>
-                <PieChart>
-                  <Pie data={distribution} dataKey="value" nameKey="name" innerRadius={58} outerRadius={82} strokeWidth={0}>
-                    {distribution.map((_, i) => <Cell key={i} fill={chartColors[i % chartColors.length]} />)}
-                  </Pie>
-                  <Tooltip formatter={(v) => human(v)} />
-                </PieChart>
-              </ResponsiveContainer>
+              {distribution.length > 0 ? (
+                <ResponsiveContainer>
+                  <PieChart>
+                    <Pie data={distribution} dataKey="value" nameKey="name" innerRadius={58} outerRadius={82} strokeWidth={0}>
+                      {distribution.map((_, i) => <Cell key={i} fill={chartColors[i % chartColors.length]} />)}
+                    </Pie>
+                    <Tooltip formatter={(v) => human(v)} />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : <EmptyChart t={t} compact />}
             </div>
             <div className="legend-list">
               {distribution.slice(0, 5).map((item, i) => (
@@ -399,6 +407,13 @@ function App() {
                   t={t}
                 />
               ))}
+              {visibleItems.length === 0 && (
+                <div className="table-empty">
+                  <Sparkles size={18} />
+                  <strong>{t.noCandidates}</strong>
+                  <span>{t.noCandidatesHint}</span>
+                </div>
+              )}
             </div>
           </Card>
 
@@ -492,6 +507,16 @@ function CandidateRow({ item, selected, onSelect, onExclude, t }) {
         {item.excluded ? <RotateCcw size={14} /> : <EyeOff size={14} />}
         {item.excluded ? t.restore : t.exclude}
       </button>
+    </div>
+  );
+}
+
+function EmptyChart({ t, compact = false }) {
+  return (
+    <div className={`empty-chart ${compact ? "compact" : ""}`}>
+      <Sparkles size={18} />
+      <strong>{t.noCandidates}</strong>
+      {!compact && <span>{t.noCandidatesHint}</span>}
     </div>
   );
 }

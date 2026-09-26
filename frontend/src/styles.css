@@ -147,6 +147,20 @@ code { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 12p
   border-radius: 8px; border: 1px solid var(--border); background: #fff; color: var(--foreground); cursor: pointer; font-size: 12px; font-weight: 780;
 }
 .row-action:disabled { opacity: .45; cursor: default; }
+.table-empty {
+  min-height: 168px; display: grid; place-items: center; align-content: center; gap: 8px;
+  padding: 22px; border-top: 1px solid var(--border); color: var(--muted); text-align: center;
+  background: linear-gradient(180deg, #fff, #fffaf5);
+}
+.table-empty svg, .empty-chart svg { color: var(--primary); }
+.table-empty strong, .empty-chart strong { color: var(--foreground); }
+.table-empty span, .empty-chart span { max-width: 440px; line-height: 1.45; }
+.empty-chart {
+  width: 100%; height: 100%; min-height: 180px; display: grid; place-items: center; align-content: center;
+  gap: 8px; color: var(--muted); text-align: center; border: 1px dashed #fed7aa; border-radius: 8px;
+  background: #fffaf5;
+}
+.empty-chart.compact { min-height: 150px; }
 
 .history-card { position: sticky; top: 18px; }
 .history-row { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px; background: #fff; }
