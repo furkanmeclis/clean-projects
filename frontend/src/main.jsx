@@ -9,10 +9,9 @@ import {
   Command,
   EyeOff,
   Flame,
-  FolderSearch,
+  Github,
   Globe2,
   HardDrive,
-  History,
   Loader2,
   Power,
   RefreshCw,
@@ -287,34 +286,6 @@ function App() {
 
   return (
     <main className="app-shell">
-      <aside className="app-sidebar">
-        <div className="brand-row">
-          <div className="brand-icon"><Flame size={20} /></div>
-          <div>
-            <strong>{t.product}</strong>
-            <span>{t.badge}</span>
-          </div>
-        </div>
-
-        <nav className="nav-list">
-          <a className="active"><AreaIcon size={16} /> {t.overview}</a>
-          <a><FolderSearch size={16} /> {t.candidates}</a>
-          <a><History size={16} /> {t.history}</a>
-          <a><ShieldCheck size={16} /> {t.settings}</a>
-        </nav>
-
-        <div className="safety-card">
-          <ShieldCheck size={18} />
-          <p>{t.protected}</p>
-        </div>
-
-        <div className="developer-card">
-          <span>{t.by}</span>
-          <strong>{developer.name}</strong>
-          <a href={developer.url}>{developer.handle}</a>
-        </div>
-      </aside>
-
       <section className="app-main">
         <header className="site-header">
           <div>
@@ -430,6 +401,18 @@ function App() {
             ))}
           </Card>
         </section>
+
+        <footer className="app-footer">
+          <div>
+            <strong>{t.product}</strong>
+            <span>{t.protected}</span>
+          </div>
+          <a href={developer.url} target="_blank" rel="noreferrer">
+            <Github size={17} />
+            <span>{developer.name}</span>
+            <b>{developer.handle}</b>
+          </a>
+        </footer>
       </section>
 
       {dialogOpen && (
