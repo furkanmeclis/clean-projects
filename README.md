@@ -6,7 +6,7 @@
 [![React](https://img.shields.io/badge/frontend-React-61DAFB?style=flat-square&logo=react&logoColor=181512)](frontend)
 [![License: MIT](https://img.shields.io/badge/license-MIT-ff7417?style=flat-square)](LICENSE)
 
-![CleanProjects cover](docs/images/cover.svg)
+![CleanProjects cover](docs/images/cover.png)
 
 CleanProjects is a macOS disk cleanup dashboard for developers. It scans regenerable storage such as Docker build cache, Cursor state, Claude local VM bundles, Xcode build data, pnpm stores, Chrome caches, and project artifacts like `node_modules`, `.next`, `dist`, and build outputs.
 
