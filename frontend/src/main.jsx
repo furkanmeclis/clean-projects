@@ -1,16 +1,19 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  AreaChart as AreaIcon,
   ArchiveX,
   Check,
   ChevronRight,
   Clock3,
+  Command,
   EyeOff,
   Flame,
+  FolderSearch,
   Globe2,
   HardDrive,
+  History,
   Loader2,
-  PieChart as PieIcon,
   RefreshCw,
   RotateCcw,
   Search,
@@ -19,77 +22,120 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import "./styles.css";
+
+const developer = {
+  name: "Furkan Meclis",
+  handle: "@furkanmeclis",
+  url: "https://github.com/furkanmeclis",
+};
 
 const copy = {
   tr: {
-    badge: "Yerel temizlik konsolu",
-    title: "CleanProjects",
-    subtitle: "Diskini tarar, riskli alanları ayırır ve yalnızca seçtiğin yeniden üretilebilir verileri temizler.",
-    protected: "iCloud Drive ve Library/Mobile Documents kapsam dışı. Bu yollar kilitli koruma listesinde.",
-    scan: "Yeniden analiz et",
+    product: "CleanProjects",
+    badge: "macOS developer cleanup",
+    title: "Disk analizi ve güvenli temizlik konsolu",
+    subtitle: "Docker, Xcode, Cursor, Claude, Chrome ve proje artefact'larını tek ekranda analiz et. Silinecek her şey önce seçilir, risklenir ve iCloud yolları korunur.",
+    protected: "iCloud Drive ve Library/Mobile Documents kilitli koruma listesinde.",
+    scan: "Yeniden tara",
     delete: "Temizliği başlat",
     cancel: "Vazgeç",
-    confirmDelete: "Seçili öğeleri temizle",
-    confirmBody: "Bu işlem geri alınamaz. Yüksek riskli öğelerde uygulamayı kapatmış olman önerilir.",
-    selected: "Seçili",
-    recoverable: "Aktif potansiyel",
+    confirmDelete: "Seçili temizlik çalıştırılsın mı?",
+    confirmBody: "Bu işlem geri alınamaz. Yüksek riskli app verilerinde ilgili uygulamayı kapatman önerilir.",
     free: "Boş alan",
-    excluded: "Saf dışı",
+    recoverable: "Temizlenebilir",
+    selected: "Seçili",
+    ignored: "Saf dışı",
+    overview: "Genel Bakış",
+    candidates: "Adaylar",
+    history: "Geçmiş",
+    settings: "Güvenlik",
     search: "Docker, Cursor, Chrome, node_modules...",
     active: "Aktif",
-    ignored: "Saf dışı",
+    excluded: "Saf dışı",
     all: "Tümü",
-    history: "Geçmiş",
-    noHistory: "Henüz temizlik yapılmadı.",
-    distribution: "Dağılım",
-    largest: "En büyükler",
+    storageTrend: "Depolama Profili",
+    largest: "En büyük alanlar",
+    distribution: "Tür dağılımı",
+    cleanupQueue: "Temizlik kuyruğu",
+    path: "Yol / Komut",
+    kind: "Tür",
+    risk: "Risk",
+    size: "Boyut",
+    action: "Aksiyon",
     exclude: "Saf dışı",
     restore: "Geri al",
+    clean: "Temiz",
+    noHistory: "Henüz temizlik yapılmadı.",
     done: "Temizlik tamamlandı.",
     analyzingTitle: "Disk haritası çıkarılıyor",
-    analyzingBody: "Projeler, cache alanları, Docker, Cursor, Claude, Xcode ve mobil SDK klasörleri güvenli kurallarla taranıyor.",
-    analyzingStep1: "iCloud yolları korunuyor",
-    analyzingStep2: "Yeniden üretilebilir alanlar ölçülüyor",
-    analyzingStep3: "Risk etiketleri hazırlanıyor",
-    risk: "risk",
+    analyzingBody: "Geliştirici cache'leri, proje çıktıları ve mobil runtime alanları güvenlik kurallarıyla ölçülüyor.",
+    step1: "iCloud yolları korunuyor",
+    step2: "Aday klasörler ölçülüyor",
+    step3: "Risk etiketleri hazırlanıyor",
+    by: "Geliştirici",
   },
   en: {
-    badge: "Local cleanup console",
-    title: "CleanProjects",
-    subtitle: "Scans your disk, separates risky areas, and cleans only the regenerable data you choose.",
-    protected: "iCloud Drive and Library/Mobile Documents are out of scope. Those paths are locked in the protection list.",
-    scan: "Analyze again",
+    product: "CleanProjects",
+    badge: "macOS developer cleanup",
+    title: "Disk analysis and safe cleanup console",
+    subtitle: "Analyze Docker, Xcode, Cursor, Claude, Chrome, and project artifacts in one premium local dashboard. Everything is selected first, risk-labeled, and iCloud-safe.",
+    protected: "iCloud Drive and Library/Mobile Documents are locked in the protection list.",
+    scan: "Scan again",
     delete: "Start cleanup",
     cancel: "Cancel",
-    confirmDelete: "Clean selected items",
-    confirmBody: "This cannot be undone. For high-risk app data, close the related app first.",
-    selected: "Selected",
-    recoverable: "Active potential",
+    confirmDelete: "Run selected cleanup?",
+    confirmBody: "This cannot be undone. Close related apps before deleting high-risk app data.",
     free: "Free space",
-    excluded: "Excluded",
+    recoverable: "Recoverable",
+    selected: "Selected",
+    ignored: "Excluded",
+    overview: "Overview",
+    candidates: "Candidates",
+    history: "History",
+    settings: "Safety",
     search: "Docker, Cursor, Chrome, node_modules...",
     active: "Active",
-    ignored: "Excluded",
+    excluded: "Excluded",
     all: "All",
-    history: "History",
-    noHistory: "No cleanup history yet.",
-    distribution: "Distribution",
-    largest: "Largest",
+    storageTrend: "Storage Profile",
+    largest: "Largest areas",
+    distribution: "Type distribution",
+    cleanupQueue: "Cleanup queue",
+    path: "Path / Command",
+    kind: "Kind",
+    risk: "Risk",
+    size: "Size",
+    action: "Action",
     exclude: "Exclude",
     restore: "Restore",
+    clean: "Clean",
+    noHistory: "No cleanup history yet.",
     done: "Cleanup complete.",
     analyzingTitle: "Mapping your disk",
-    analyzingBody: "Projects, caches, Docker, Cursor, Claude, Xcode, and mobile SDK folders are scanned with safety rules.",
-    analyzingStep1: "Protecting iCloud paths",
-    analyzingStep2: "Measuring regenerable storage",
-    analyzingStep3: "Preparing risk labels",
-    risk: "risk",
+    analyzingBody: "Developer caches, project outputs, and mobile runtime areas are measured with safety rules.",
+    step1: "Protecting iCloud paths",
+    step2: "Measuring candidates",
+    step3: "Preparing risk labels",
+    by: "Developer",
   },
 };
 
-const colors = ["#f97316", "#fb923c", "#ea580c", "#c2410c", "#fdba74", "#9a3412"];
+const chartColors = ["#f97316", "#fb923c", "#ea580c", "#c2410c", "#fdba74", "#9a3412"];
 
 function App() {
   const [scan, setScan] = useState(null);
@@ -115,18 +161,18 @@ function App() {
   }, []);
 
   const candidates = scan?.candidates || [];
-  const visibleItems = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return candidates
-      .filter((c) => (view === "active" ? !c.excluded : view === "ignored" ? c.excluded : true))
-      .filter((c) => `${c.label} ${c.path} ${c.kind} ${c.description}`.toLowerCase().includes(q));
-  }, [candidates, query, view]);
-
   const activeItems = candidates.filter((c) => !c.excluded && c.available);
   const selectedItems = candidates.filter((c) => selected.has(c.id) && c.available && !c.excluded);
   const selectedBytes = selectedItems.reduce((sum, c) => sum + c.sizeBytes, 0);
   const totalBytes = activeItems.reduce((sum, c) => sum + c.sizeBytes, 0);
   const history = scan?.state?.history || [];
+
+  const visibleItems = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return candidates
+      .filter((c) => (view === "active" ? !c.excluded : view === "excluded" ? c.excluded : true))
+      .filter((c) => `${c.label} ${c.path} ${c.kind} ${c.description}`.toLowerCase().includes(q));
+  }, [candidates, query, view]);
 
   const distribution = useMemo(() => {
     const grouped = new Map();
@@ -134,7 +180,12 @@ function App() {
     return [...grouped.entries()].map(([name, value]) => ({ name, value, label: human(value) }));
   }, [candidates]);
 
-  const largest = activeItems.slice().sort((a, b) => b.sizeBytes - a.sizeBytes).slice(0, 7);
+  const largest = activeItems.slice().sort((a, b) => b.sizeBytes - a.sizeBytes).slice(0, 8);
+  const profile = largest.map((item, index) => ({
+    name: item.label.length > 18 ? `${item.label.slice(0, 18)}...` : item.label,
+    size: item.sizeBytes,
+    index: index + 1,
+  }));
 
   const setLanguage = (next) => {
     setLang(next);
@@ -181,75 +232,112 @@ function App() {
   if (!scan) return <AnalysisScreen t={t} />;
 
   return (
-    <main>
-      <section className="shell">
-        <aside className="sidebar">
-          <div className="brand-mark"><Flame size={22} /></div>
+    <main className="app-shell">
+      <aside className="app-sidebar">
+        <div className="brand-row">
+          <div className="brand-icon"><Flame size={20} /></div>
           <div>
-            <div className="overline">{t.badge}</div>
-            <h1>{t.title}</h1>
+            <strong>{t.product}</strong>
+            <span>{t.badge}</span>
           </div>
-          <p>{t.subtitle}</p>
-          <div className="safe-note"><ShieldCheck size={18} /> {t.protected}</div>
-          <div className="sidebar-actions">
-            <Button variant="secondary" onClick={() => setLanguage(lang === "tr" ? "en" : "tr")}><Globe2 size={16} /> {lang.toUpperCase()}</Button>
+        </div>
+
+        <nav className="nav-list">
+          <a className="active"><AreaIcon size={16} /> {t.overview}</a>
+          <a><FolderSearch size={16} /> {t.candidates}</a>
+          <a><History size={16} /> {t.history}</a>
+          <a><ShieldCheck size={16} /> {t.settings}</a>
+        </nav>
+
+        <div className="safety-card">
+          <ShieldCheck size={18} />
+          <p>{t.protected}</p>
+        </div>
+
+        <div className="developer-card">
+          <span>{t.by}</span>
+          <strong>{developer.name}</strong>
+          <a href={developer.url}>{developer.handle}</a>
+        </div>
+      </aside>
+
+      <section className="app-main">
+        <header className="site-header">
+          <div>
+            <div className="breadcrumb"><Command size={14} /> {t.product} <ChevronRight size={14} /> {t.overview}</div>
+            <h1>{t.title}</h1>
+            <p>{t.subtitle}</p>
+          </div>
+          <div className="header-actions">
+            <Button variant="outline" onClick={() => setLanguage(lang === "tr" ? "en" : "tr")}><Globe2 size={16} /> {lang.toUpperCase()}</Button>
             <Button onClick={load} disabled={busy}><RefreshCw size={16} /> {t.scan}</Button>
           </div>
-        </aside>
+        </header>
 
-        <section className="content">
-          <div className="top-grid">
-            <Metric icon={<HardDrive />} label={t.free} value={scan.disk.free} sub={`${scan.disk.pct} used`} />
-            <Metric icon={<Sparkles />} label={t.recoverable} value={human(totalBytes)} sub={`${activeItems.length} items`} />
-            <Metric icon={<Check />} label={t.selected} value={human(selectedBytes)} sub={`${selectedItems.length} items`} />
-            <Metric icon={<ArchiveX />} label={t.excluded} value={candidates.filter((c) => c.excluded).length} sub="hidden" />
-          </div>
+        <section className="section-cards">
+          <Metric icon={<HardDrive />} label={t.free} value={scan.disk.free} sub={`${scan.disk.pct} used`} trend="+ ready" />
+          <Metric icon={<Sparkles />} label={t.recoverable} value={human(totalBytes)} sub={`${activeItems.length} items`} trend="scan" />
+          <Metric icon={<Check />} label={t.selected} value={human(selectedBytes)} sub={`${selectedItems.length} items`} trend="queue" />
+          <Metric icon={<ArchiveX />} label={t.ignored} value={candidates.filter((c) => c.excluded).length} sub={t.clean} trend="safe" />
+        </section>
 
-          <div className="insights">
-            <Panel title={t.distribution} icon={<PieIcon size={17} />}>
-              <div className="donut-wrap">
-                <ResponsiveContainer>
-                  <PieChart>
-                    <Pie data={distribution} dataKey="value" nameKey="name" innerRadius={58} outerRadius={86} strokeWidth={0}>
-                      {distribution.map((_, i) => <Cell key={i} fill={colors[i % colors.length]} />)}
-                    </Pie>
-                    <Tooltip formatter={(v) => human(v)} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="legend">
-                {distribution.map((x, i) => <span key={x.name}><i style={{ background: colors[i % colors.length] }} />{x.name} · {x.label}</span>)}
-              </div>
-            </Panel>
+        <section className="chart-grid">
+          <Card title={t.storageTrend} icon={<AreaIcon size={16} />} className="wide">
+            <div className="area-chart">
+              <ResponsiveContainer>
+                <AreaChart data={profile} margin={{ left: 4, right: 18, top: 16, bottom: 4 }}>
+                  <defs>
+                    <linearGradient id="orangeArea" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f97316" stopOpacity={0.35} />
+                      <stop offset="95%" stopColor="#f97316" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1e7dd" />
+                  <XAxis dataKey="index" tickLine={false} axisLine={false} tick={{ fill: "#78716c", fontSize: 12 }} />
+                  <YAxis tickLine={false} axisLine={false} tick={{ fill: "#78716c", fontSize: 12 }} tickFormatter={human} width={64} />
+                  <Tooltip formatter={(v) => human(v)} labelFormatter={(v) => `#${v}`} />
+                  <Area type="monotone" dataKey="size" stroke="#f97316" strokeWidth={3} fill="url(#orangeArea)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
 
-            <Panel title={t.largest} icon={<Flame size={17} />}>
-              <div className="bar-wrap">
-                <ResponsiveContainer>
-                  <BarChart data={largest} layout="vertical" margin={{ left: 8, right: 12, top: 2, bottom: 2 }}>
-                    <XAxis type="number" hide />
-                    <YAxis type="category" dataKey="label" width={116} tick={{ fontSize: 11, fill: "#78716c" }} />
-                    <Tooltip formatter={(v) => human(v)} />
-                    <Bar dataKey="sizeBytes" fill="#f97316" radius={[0, 7, 7, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </Panel>
-          </div>
+          <Card title={t.distribution} icon={<Flame size={16} />}>
+            <div className="donut">
+              <ResponsiveContainer>
+                <PieChart>
+                  <Pie data={distribution} dataKey="value" nameKey="name" innerRadius={58} outerRadius={82} strokeWidth={0}>
+                    {distribution.map((_, i) => <Cell key={i} fill={chartColors[i % chartColors.length]} />)}
+                  </Pie>
+                  <Tooltip formatter={(v) => human(v)} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="legend-list">
+              {distribution.slice(0, 5).map((item, i) => (
+                <span key={item.name}><i style={{ background: chartColors[i % chartColors.length] }} />{item.name}<b>{item.label}</b></span>
+              ))}
+            </div>
+          </Card>
+        </section>
 
-          <Panel className="scanner" title="Scanner" icon={<Search size={17} />}>
-            <div className="toolbar">
-              <div className="input-wrap"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t.search} /></div>
-              <Segmented value={view} onChange={setView} items={[
-                ["active", t.active],
-                ["ignored", t.ignored],
-                ["all", t.all],
-              ]} />
-              <Button variant="destructive" disabled={!selectedItems.length || busy} onClick={() => setDialogOpen(true)}>
-                <Trash2 size={16} /> {t.delete}
-              </Button>
+        <section className="table-layout">
+          <Card title={t.cleanupQueue} icon={<Search size={16} />} className="table-card">
+            <div className="table-toolbar">
+              <label className="search-field"><Search size={15} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t.search} /></label>
+              <Segmented value={view} onChange={setView} items={[[ "active", t.active ], [ "excluded", t.excluded ], [ "all", t.all ]]} />
+              <Button variant="destructive" disabled={!selectedItems.length || busy} onClick={() => setDialogOpen(true)}><Trash2 size={16} /> {t.delete}</Button>
             </div>
 
-            <div className="candidate-list">
+            <div className="data-table">
+              <div className="table-head">
+                <span></span>
+                <span>{t.candidates}</span>
+                <span>{t.kind}</span>
+                <span>{t.risk}</span>
+                <span>{t.size}</span>
+                <span>{t.action}</span>
+              </div>
               {visibleItems.map((item) => (
                 <CandidateRow
                   key={item.id}
@@ -261,21 +349,21 @@ function App() {
                 />
               ))}
             </div>
-          </Panel>
-        </section>
+          </Card>
 
-        <aside className="history-rail">
-          <Panel title={t.history} icon={<Clock3 size={17} />}>
+          <Card title={t.history} icon={<Clock3 size={16} />} className="history-card">
             {history.length === 0 && <p className="empty">{t.noHistory}</p>}
-            {history.map((h, idx) => (
-              <div className="history-item" key={`${h.time}-${idx}`}>
-                <strong>{h.totalHuman}</strong>
-                <span>{new Date(h.time).toLocaleString(lang === "tr" ? "tr-TR" : "en-US")}</span>
-                <small>{h.items.map((x) => x.label).slice(0, 3).join(", ")}</small>
+            {history.map((item, index) => (
+              <div className="history-row" key={`${item.time}-${index}`}>
+                <div>
+                  <strong>{item.totalHuman}</strong>
+                  <span>{new Date(item.time).toLocaleString(lang === "tr" ? "tr-TR" : "en-US")}</span>
+                </div>
+                <small>{item.items.map((x) => x.label).slice(0, 2).join(", ")}</small>
               </div>
             ))}
-          </Panel>
-        </aside>
+          </Card>
+        </section>
       </section>
 
       {dialogOpen && (
@@ -283,18 +371,15 @@ function App() {
           <div className="dialog-icon"><Trash2 size={22} /></div>
           <h2>{t.confirmDelete}</h2>
           <p>{t.confirmBody}</p>
-          <div className="dialog-summary">
-            <span>{selectedItems.length} items</span>
-            <strong>{human(selectedBytes)}</strong>
-          </div>
+          <div className="dialog-summary"><span>{selectedItems.length} items</span><strong>{human(selectedBytes)}</strong></div>
           <div className="dialog-actions">
-            <Button variant="secondary" onClick={() => setDialogOpen(false)}>{t.cancel}</Button>
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>{t.cancel}</Button>
             <Button variant="destructive" onClick={runDelete}><Trash2 size={16} /> {t.delete}</Button>
           </div>
         </Dialog>
       )}
 
-      {busy && <div className="busy-pill"><Loader2 className="spin" size={16} /> {t.analyzingStep2}</div>}
+      {busy && <div className="floating-status"><Loader2 className="spin" size={16} /> {t.step2}</div>}
       {notice && <div className="toast"><Check size={16} /> {notice}</div>}
     </main>
   );
@@ -302,16 +387,16 @@ function App() {
 
 function AnalysisScreen({ t }) {
   return (
-    <main className="analysis-page">
-      <section className="analysis-card">
-        <div className="analysis-orbit"><Flame size={34} /></div>
-        <div className="overline">{t.badge}</div>
+    <main className="analysis-screen">
+      <section className="analysis-panel">
+        <div className="analysis-mark"><Flame size={34} /></div>
+        <span>{t.badge}</span>
         <h1>{t.analyzingTitle}</h1>
         <p>{t.analyzingBody}</p>
         <div className="analysis-steps">
-          <span><Check size={15} /> {t.analyzingStep1}</span>
-          <span><Loader2 className="spin" size={15} /> {t.analyzingStep2}</span>
-          <span><ChevronRight size={15} /> {t.analyzingStep3}</span>
+          <b><Check size={15} /> {t.step1}</b>
+          <b><Loader2 className="spin" size={15} /> {t.step2}</b>
+          <b><ChevronRight size={15} /> {t.step3}</b>
         </div>
       </section>
     </main>
@@ -320,39 +405,40 @@ function AnalysisScreen({ t }) {
 
 function CandidateRow({ item, selected, onSelect, onExclude, t }) {
   return (
-    <article className={`candidate risk-${item.risk} ${selected ? "selected" : ""} ${item.excluded ? "excluded" : ""}`} onClick={onSelect}>
-      <div className="select-dot">{selected && <Check size={14} />}</div>
-      <div className="candidate-main">
-        <div className="candidate-title">
-          <strong>{item.label}</strong>
-          <span>{item.kind}</span>
-          <span>{item.risk} {t.risk}</span>
-          {item.excluded && <span>{t.excluded}</span>}
-        </div>
-        <p>{item.description}</p>
+    <div className={`table-row risk-${item.risk} ${selected ? "selected" : ""} ${item.excluded ? "excluded" : ""}`} onClick={onSelect}>
+      <span className="select-control">{selected && <Check size={13} />}</span>
+      <div className="candidate-cell">
+        <strong>{item.label}</strong>
         <code>{item.path || item.method}</code>
       </div>
-      <div className="candidate-side">
-        <strong>{item.sizeHuman}</strong>
-        <button className="mini-button" onClick={(e) => { e.stopPropagation(); onExclude(); }} disabled={!item.available}>
-          {item.excluded ? <RotateCcw size={14} /> : <EyeOff size={14} />}
-          {item.excluded ? t.restore : t.exclude}
-        </button>
-      </div>
+      <span className="pill">{item.kind}</span>
+      <span className="risk-pill">{item.risk}</span>
+      <strong className="size-cell">{item.sizeHuman}</strong>
+      <button className="row-action" disabled={!item.available} onClick={(event) => { event.stopPropagation(); onExclude(); }}>
+        {item.excluded ? <RotateCcw size={14} /> : <EyeOff size={14} />}
+        {item.excluded ? t.restore : t.exclude}
+      </button>
+    </div>
+  );
+}
+
+function Metric({ icon, label, value, sub, trend }) {
+  return (
+    <article className="metric-card">
+      <div className="metric-top">{React.cloneElement(icon, { size: 18 })}<span>{trend}</span></div>
+      <p>{label}</p>
+      <strong>{value}</strong>
+      <small>{sub}</small>
     </article>
   );
 }
 
-function Metric({ icon, label, value, sub }) {
-  return <div className="metric">{React.cloneElement(icon, { size: 19 })}<span>{label}</span><strong>{value}</strong><small>{sub}</small></div>;
-}
-
-function Panel({ title, icon, children, className = "" }) {
-  return <section className={`panel ${className}`}><div className="panel-title">{icon}{title}</div>{children}</section>;
+function Card({ title, icon, children, className = "" }) {
+  return <section className={`card ${className}`}><div className="card-header">{icon}<strong>{title}</strong></div>{children}</section>;
 }
 
 function Button({ children, variant = "primary", ...props }) {
-  return <button className={`btn ${variant}`} {...props}>{children}</button>;
+  return <button className={`button ${variant}`} {...props}>{children}</button>;
 }
 
 function Segmented({ value, onChange, items }) {
@@ -362,7 +448,7 @@ function Segmented({ value, onChange, items }) {
 function Dialog({ children, onClose }) {
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
-      <div className="dialog" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="dialog" onMouseDown={(event) => event.stopPropagation()}>
         <button className="dialog-close" onClick={onClose}><X size={16} /></button>
         {children}
       </div>
@@ -373,9 +459,13 @@ function Dialog({ children, onClose }) {
 function human(n) {
   if (!n) return "0B";
   const units = ["B", "KB", "MB", "GB", "TB"];
-  let v = n, i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return `${Number(v.toFixed(1)).toLocaleString()}${units[i]}`;
+  let value = n;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index++;
+  }
+  return `${Number(value.toFixed(1)).toLocaleString()}${units[index]}`;
 }
 
 createRoot(document.getElementById("root")).render(<App />);

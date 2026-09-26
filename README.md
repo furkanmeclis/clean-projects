@@ -116,7 +116,10 @@ The workflow builds:
 - Exportable cleanup reports
 - Lighter chart bundle
 
+## Author
+
+Built by [Furkan Meclis](https://github.com/furkanmeclis) (`@furkanmeclis`).
+
 ## License
 
 MIT
-
