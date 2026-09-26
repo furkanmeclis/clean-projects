@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -110,7 +111,7 @@ type JobEvent struct {
 }
 
 var (
-	homeDir, _       = os.UserHomeDir()
+	homeDir          = resolveHomeDir()
 	documentsDir     = filepath.Join(homeDir, "Documents")
 	icloudMobileDocs = filepath.Join(homeDir, "Library", "Mobile Documents")
 	protectedRoots   = []string{
@@ -129,6 +130,19 @@ var (
 	lastScan ScanResponse
 	hasScan  bool
 )
+
+func resolveHomeDir() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return home
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		return home
+	}
+	if current, err := user.Current(); err == nil && current.HomeDir != "" {
+		return current.HomeDir
+	}
+	return "."
+}
 
 func main() {
 	mux := http.NewServeMux()
@@ -469,6 +483,9 @@ func scanProjectArtifacts(root string) []Candidate {
 			}
 			return nil
 		}
+		if isSelfPath(path) {
+			return filepath.SkipDir
+		}
 		name := d.Name()
 		if name == ".git" || name == "Backups" {
 			return filepath.SkipDir
@@ -488,21 +505,21 @@ func globalCandidates() []Candidate {
 	specs := []struct {
 		label, path, kind, method, desc, risk string
 	}{
-		{"Xcode DerivedData", filepath.Join(homeDir, "Library/Developer/Xcode/DerivedData"), "xcode", "remove", "Xcode build cache. Projects rebuild it.", "low"},
-		{"Xcode device logs", filepath.Join(homeDir, "Library/Developer/Xcode/DeviceLogs"), "xcode", "remove", "Device logs captured by Xcode.", "low"},
-		{"Xcode iOS DeviceSupport", filepath.Join(homeDir, "Library/Developer/Xcode/iOS DeviceSupport"), "xcode", "remove", "Symbols/support files for connected iOS devices.", "medium"},
-		{"Xcode Products cache", filepath.Join(homeDir, "Library/Developer/Xcode/Products"), "xcode", "remove", "Cached installed product metadata.", "low"},
-		{"Android SDK", filepath.Join(homeDir, "Library/Android/sdk"), "mobile", "remove", "Android SDK, emulator images and NDK. Reinstall through Android Studio/sdkmanager.", "high"},
-		{"pnpm store", filepath.Join(homeDir, "Library/pnpm/store"), "cache", "pnpm", "pnpm package store. Recreated on install.", "low"},
-		{"uv cache", filepath.Join(homeDir, ".cache/uv"), "cache", "remove", "Python uv cache.", "low"},
-		{"Codex runtime cache", filepath.Join(homeDir, ".cache/codex-runtimes"), "cache", "remove", "Bundled runtime dependency cache.", "medium"},
-		{"Spotify cache", filepath.Join(homeDir, "Library/Caches/com.spotify.client"), "cache", "remove", "Spotify media cache.", "low"},
-		{"Google Chrome cache", filepath.Join(homeDir, "Library/Caches/Google"), "cache", "remove", "Chrome cache files.", "low"},
-		{"Chrome on-device model", filepath.Join(homeDir, "Library/Application Support/Google/Chrome/OptGuideOnDeviceModel"), "cache", "remove", "Chrome local optimization model cache.", "low"},
-		{"Cursor cached app data", filepath.Join(homeDir, "Library/Application Support/Cursor/CachedData"), "cache", "remove", "Old Cursor Electron app caches.", "low"},
-		{"Cursor extension trash", filepath.Join(homeDir, "Library/Application Support/Cursor/CachedExtensionVSIXs/.trash"), "cache", "remove", "Cursor cached extension trash.", "low"},
-		{"Cursor global state DB", filepath.Join(homeDir, "Library/Application Support/Cursor/User/globalStorage/state.vscdb"), "app-data", "remove", "Large Cursor global state database. Close Cursor before deleting; settings/state can reset.", "high"},
-		{"Claude VM bundle", filepath.Join(homeDir, "Library/Application Support/Claude/vm_bundles"), "app-data", "remove", "Claude local VM bundle. Close Claude before deleting; it may redownload.", "high"},
+		{"Xcode DerivedData", filepath.Join(homeDir, "Library", "Developer", "Xcode", "DerivedData"), "xcode", "remove", "Xcode build cache. Projects rebuild it.", "low"},
+		{"Xcode device logs", filepath.Join(homeDir, "Library", "Developer", "Xcode", "DeviceLogs"), "xcode", "remove", "Device logs captured by Xcode.", "low"},
+		{"Xcode iOS DeviceSupport", filepath.Join(homeDir, "Library", "Developer", "Xcode", "iOS DeviceSupport"), "xcode", "remove", "Symbols/support files for connected iOS devices.", "medium"},
+		{"Xcode Products cache", filepath.Join(homeDir, "Library", "Developer", "Xcode", "Products"), "xcode", "remove", "Cached installed product metadata.", "low"},
+		{"Android SDK", filepath.Join(homeDir, "Library", "Android", "sdk"), "mobile", "remove", "Android SDK, emulator images and NDK. Reinstall through Android Studio/sdkmanager.", "high"},
+		{"pnpm store", filepath.Join(homeDir, "Library", "pnpm", "store"), "cache", "pnpm", "pnpm package store. Recreated on install.", "low"},
+		{"uv cache", filepath.Join(homeDir, ".cache", "uv"), "cache", "remove", "Python uv cache.", "low"},
+		{"Codex runtime cache", filepath.Join(homeDir, ".cache", "codex-runtimes"), "cache", "remove", "Bundled runtime dependency cache.", "medium"},
+		{"Spotify cache", filepath.Join(homeDir, "Library", "Caches", "com.spotify.client"), "cache", "remove", "Spotify media cache.", "low"},
+		{"Google Chrome cache", filepath.Join(homeDir, "Library", "Caches", "Google"), "cache", "remove", "Chrome cache files.", "low"},
+		{"Chrome on-device model", filepath.Join(homeDir, "Library", "Application Support", "Google", "Chrome", "OptGuideOnDeviceModel"), "cache", "remove", "Chrome local optimization model cache.", "low"},
+		{"Cursor cached app data", filepath.Join(homeDir, "Library", "Application Support", "Cursor", "CachedData"), "cache", "remove", "Old Cursor Electron app caches.", "low"},
+		{"Cursor extension trash", filepath.Join(homeDir, "Library", "Application Support", "Cursor", "CachedExtensionVSIXs", ".trash"), "cache", "remove", "Cursor cached extension trash.", "low"},
+		{"Cursor global state DB", filepath.Join(homeDir, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb"), "app-data", "remove", "Large Cursor global state database. Close Cursor before deleting; settings/state can reset.", "high"},
+		{"Claude VM bundle", filepath.Join(homeDir, "Library", "Application Support", "Claude", "vm_bundles"), "app-data", "remove", "Claude local VM bundle. Close Claude before deleting; it may redownload.", "high"},
 	}
 
 	out := make([]Candidate, 0, len(specs))
@@ -597,12 +614,20 @@ func runCommandWithLog(logf func(string), name string, args ...string) error {
 }
 
 func makePathCandidate(label, path, kind, method, desc, risk string) Candidate {
+	path = normalizeUserPath(path)
 	size, mod, available := pathStats(path)
 	return Candidate{
 		ID: idFor(method + "|" + path), Label: label, Path: path, Kind: kind, Method: method,
 		SizeBytes: size, SizeHuman: human(size), Modified: mod, Available: available,
 		Description: desc, Risk: risk,
 	}
+}
+
+func normalizeUserPath(path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(homeDir, path)
 }
 
 func makeCommandCandidate(label, seed string, size int64, method, desc, risk string) Candidate {
@@ -630,6 +655,17 @@ func isComposerVendor(path string) bool {
 func safeProjectPath(path string) bool {
 	clean := filepath.ToSlash(path)
 	return !strings.Contains(clean, "/.git/") && !strings.Contains(clean, "/Backups/") && !strings.Contains(clean, "/Library/Mobile Documents/")
+}
+
+func isSelfPath(path string) bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	exeDir := filepath.Dir(exe)
+	absPath, _ := filepath.Abs(path)
+	absExeDir, _ := filepath.Abs(exeDir)
+	return absPath == absExeDir || strings.HasPrefix(absPath, absExeDir+string(os.PathSeparator))
 }
 
 func filterSmall(in []Candidate, min int64) []Candidate {
