@@ -68,7 +68,7 @@ jobs:
           Copy-Item README.md, LICENSE dist/$name/
           Compress-Archive -Path dist/$name -DestinationPath dist/$name.zip
           (Get-FileHash dist/$name.zip -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Out-File -Encoding ascii dist/$name.zip.sha256
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.target }}
           path: |
@@ -200,9 +200,9 @@ jobs:
   publish-cli:
     name: Attach CLI binaries
     needs: [cli, desktop]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           pattern: cli-*
           path: dist
