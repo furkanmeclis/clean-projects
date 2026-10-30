@@ -164,6 +164,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/asc"
           printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey.p8"
           echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/asc/AuthKey.p8" >> "$GITHUB_ENV"
+      - name: Export Apple ID credentials for notarization
+        if: runner.os == 'macOS' && env.APPLE_ID != '' && env.APPLE_PASSWORD != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          echo "APPLE_ID=$APPLE_ID" >> "$GITHUB_ENV"
+          echo "APPLE_PASSWORD=$APPLE_PASSWORD" >> "$GITHUB_ENV"
       - name: Build and upload bundles
         uses: tauri-apps/tauri-action@v0
         env:
@@ -173,9 +181,9 @@ jobs:
           # macOS code signing (certificate imported above)
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Notarization, option A: Apple ID + app-specific password
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # Notarization, option A (Apple ID + app-specific password) is exported by the
+          # step above only when both secrets exist: Tauri picks Apple ID mode whenever
+          # APPLE_ID is defined, even as an empty string, and notarization then fails 401.
           # Notarization, option B: App Store Connect API key (issuer + key id; path set above)
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
