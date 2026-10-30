@@ -825,11 +825,12 @@ mod tests {
         assert!(names.contains(&"api"));
         assert!(!names.contains(&"x"), "protected project must be skipped");
 
+        let croot = canonical(&root);
         let paths: Vec<String> = hits
             .iter()
             .map(|h| {
                 h.path
-                    .strip_prefix(&root)
+                    .strip_prefix(&croot)
                     .unwrap()
                     .to_string_lossy()
                     .replace('\\', "/")
