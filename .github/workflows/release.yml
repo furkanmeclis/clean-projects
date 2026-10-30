@@ -67,7 +67,9 @@ jobs:
           Copy-Item target/${{ matrix.target }}/release/cleanprojects.exe dist/$name/
           Copy-Item README.md, LICENSE dist/$name/
           Compress-Archive -Path dist/$name -DestinationPath dist/$name.zip
-          (Get-FileHash dist/$name.zip -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Out-File -Encoding ascii dist/$name.zip.sha256
+          # LF line ending: Out-File writes CRLF, which breaks `shasum -c` on the zip line.
+          $hash = (Get-FileHash dist/$name.zip -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText("dist/$name.zip.sha256", "$hash  $name.zip`n")
       - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.target }}
@@ -209,7 +211,7 @@ jobs:
           merge-multiple: true
       - name: Checksums
         run: |
-          cd dist && cat *.sha256 > SHA256SUMS.txt && cat SHA256SUMS.txt
+          cd dist && cat *.sha256 | tr -d '\r' > SHA256SUMS.txt && shasum -a 256 -c SHA256SUMS.txt
       - name: Upload to the release
         # The release already exists (tauri-action created it); only attach files.
         env:
