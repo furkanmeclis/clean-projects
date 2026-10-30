@@ -31,6 +31,12 @@ pub struct ScanConfig {
     pub protected: Vec<String>,
     /// Disable individual global rules by label substring.
     pub disabled_rules: Vec<String>,
+    /// Also scan mounted external volumes (SSDs, USB drives) for projects.
+    pub volumes: bool,
+    /// Mount points to leave alone even when `volumes` is on.
+    pub skip_volumes: Vec<String>,
+    /// Treat installer files in Downloads older than this many days as candidates.
+    pub installer_days: u64,
 }
 
 impl Default for ScanConfig {
@@ -43,6 +49,9 @@ impl Default for ScanConfig {
             stale_days: 30,
             protected: Vec::new(),
             disabled_rules: Vec::new(),
+            volumes: true,
+            skip_volumes: Vec::new(),
+            installer_days: 7,
         }
     }
 }
@@ -74,20 +83,51 @@ impl Default for GitConfig {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct CleanConfig {
-    /// Move to the OS trash instead of deleting permanently.
+    /// Legacy switch kept for old config files; `mode` wins when present.
     pub use_trash: bool,
+    /// recovery (undoable bin, default), trash (OS trash) or permanent.
+    pub mode: String,
+    /// Items in the recovery bin older than this are purged automatically.
+    pub recovery_days: u64,
+    /// Refuse to clean items whose owning application is running.
+    pub block_running_apps: bool,
 }
 
 impl Default for CleanConfig {
     fn default() -> Self {
-        CleanConfig { use_trash: true }
+        CleanConfig {
+            use_trash: true,
+            mode: "recovery".into(),
+            recovery_days: 14,
+            block_running_apps: true,
+        }
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct UiConfig {
     pub language: Lang,
+    /// Desktop: keep running in the system tray when the window is closed.
+    pub close_to_tray: bool,
+    /// Desktop: rescan in the background every N hours (0 = off).
+    pub scan_interval_hours: u64,
+    /// Desktop: notify when recoverable space exceeds this many GB (0 = always after a background scan).
+    pub notify_threshold_gb: u64,
+    /// Desktop: check GitHub releases for updates on launch.
+    pub check_updates: bool,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        UiConfig {
+            language: Lang::default(),
+            close_to_tray: true,
+            scan_interval_hours: 24,
+            notify_threshold_gb: 5,
+            check_updates: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -127,11 +167,33 @@ impl Config {
             "scan.roots" => self.scan.roots = split_list(v),
             "scan.protected" => self.scan.protected = split_list(v),
             "scan.disabled_rules" => self.scan.disabled_rules = split_list(v),
+            "scan.volumes" => self.scan.volumes = b(v)?,
+            "scan.skip_volumes" => self.scan.skip_volumes = split_list(v),
+            "scan.installer_days" => self.scan.installer_days = n(v)?,
             "git.enabled" => self.git.enabled = b(v)?,
             "git.merged_branches" => self.git.merged_branches = b(v)?,
             "git.gc" => self.git.gc = b(v)?,
             "git.worktree_idle_days" => self.git.worktree_idle_days = n(v)?,
-            "clean.use_trash" => self.clean.use_trash = b(v)?,
+            "clean.use_trash" => {
+                self.clean.use_trash = b(v)?;
+                self.clean.mode = if self.clean.use_trash {
+                    "trash".into()
+                } else {
+                    "permanent".into()
+                };
+            }
+            "clean.mode" => {
+                if !["recovery", "trash", "permanent"].contains(&v.to_ascii_lowercase().as_str()) {
+                    anyhow::bail!("expected recovery, trash or permanent");
+                }
+                self.clean.mode = v.to_ascii_lowercase();
+            }
+            "clean.recovery_days" => self.clean.recovery_days = n(v)?,
+            "clean.block_running_apps" => self.clean.block_running_apps = b(v)?,
+            "ui.close_to_tray" => self.ui.close_to_tray = b(v)?,
+            "ui.scan_interval_hours" => self.ui.scan_interval_hours = n(v)?,
+            "ui.notify_threshold_gb" => self.ui.notify_threshold_gb = n(v)?,
+            "ui.check_updates" => self.ui.check_updates = b(v)?,
             "ui.language" => self.ui.language = Lang::parse(v).context("expected 'en' or 'tr'")?,
             _ => anyhow::bail!("unknown config key '{key}'"),
         }
@@ -147,12 +209,22 @@ impl Config {
             "scan.stale_days",
             "scan.protected",
             "scan.disabled_rules",
+            "scan.volumes",
+            "scan.skip_volumes",
+            "scan.installer_days",
             "git.enabled",
             "git.merged_branches",
             "git.gc",
             "git.worktree_idle_days",
             "clean.use_trash",
+            "clean.mode",
+            "clean.recovery_days",
+            "clean.block_running_apps",
             "ui.language",
+            "ui.close_to_tray",
+            "ui.scan_interval_hours",
+            "ui.notify_threshold_gb",
+            "ui.check_updates",
         ]
     }
 }
@@ -173,6 +245,9 @@ pub struct HistoryItem {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Set when the item sits in the recovery bin and can be restored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -181,7 +256,19 @@ pub struct HistoryEntry {
     pub freed: u64,
     pub dry_run: bool,
     pub trashed: bool,
+    /// recovery, trash or permanent.
+    #[serde(default)]
+    pub mode: String,
     pub items: Vec<HistoryItem>,
+}
+
+impl HistoryEntry {
+    pub fn restorable(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|i| i.recovery_id.is_some())
+            .count()
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -220,29 +307,59 @@ pub struct Paths {
     pub config_file: PathBuf,
     pub state_file: PathBuf,
     pub log_file: PathBuf,
+    /// Larger, machine-local data: recovery bin and scan cache.
+    pub data_dir: PathBuf,
+    pub journal_file: PathBuf,
+    pub scan_cache_file: PathBuf,
 }
 
 impl Paths {
     pub fn discover() -> Result<Paths> {
         let base = BaseDirs::new().context("cannot determine home directory")?;
         let home = base.home_dir().to_path_buf();
-        let config_dir = match std::env::var_os("CLEANPROJECTS_CONFIG_DIR") {
-            Some(dir) => PathBuf::from(dir),
-            None => ProjectDirs::from("", "", APP_DIR_NAME)
-                .map(|p| p.config_dir().to_path_buf())
-                .unwrap_or_else(|| home.join(".config").join(APP_DIR_NAME)),
+        let (config_dir, data_dir) = match std::env::var_os("CLEANPROJECTS_CONFIG_DIR") {
+            Some(dir) => {
+                let d = PathBuf::from(dir);
+                (d.clone(), d.join("data"))
+            }
+            None => match ProjectDirs::from("", "", APP_DIR_NAME) {
+                Some(p) => (
+                    p.config_dir().to_path_buf(),
+                    p.data_local_dir().to_path_buf(),
+                ),
+                None => (
+                    home.join(".config").join(APP_DIR_NAME),
+                    home.join(".local/share").join(APP_DIR_NAME),
+                ),
+            },
         };
-        Ok(Paths::at(home, config_dir))
+        Ok(Paths::at_with_data(home, config_dir, data_dir))
     }
 
     pub fn at(home: PathBuf, config_dir: PathBuf) -> Paths {
+        let data_dir = config_dir.join("data");
+        Paths::at_with_data(home, config_dir, data_dir)
+    }
+
+    pub fn at_with_data(home: PathBuf, config_dir: PathBuf, data_dir: PathBuf) -> Paths {
         Paths {
             config_file: config_dir.join("config.toml"),
             state_file: config_dir.join("state.json"),
             log_file: config_dir.join("cleanprojects.log"),
+            journal_file: data_dir.join("recovery.json"),
+            scan_cache_file: data_dir.join("last-scan.json"),
             home,
             config_dir,
+            data_dir,
         }
+    }
+
+    pub fn load_journal(&self) -> super::recovery::Journal {
+        super::recovery::Journal::load(&self.journal_file)
+    }
+
+    pub fn save_journal(&self, journal: &super::recovery::Journal) -> Result<()> {
+        journal.save(&self.journal_file)
     }
 
     pub fn load_config(&self) -> Result<Config> {
@@ -326,6 +443,7 @@ mod tests {
             freed: 10,
             dry_run: false,
             trashed: true,
+            mode: "trash".into(),
             items: vec![],
         });
         paths.save_state(&st).unwrap();

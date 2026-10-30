@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Check, ChevronDown, ChevronRight, History as HistoryIcon, Recycle, Trash2, TrendingUp, X, FlaskConical } from "lucide-react";
-import type { HistoryEntry } from "../types";
+import { Archive, Check, ChevronDown, ChevronRight, History as HistoryIcon, Recycle, RotateCcw, Trash2, TrendingUp, X, FlaskConical } from "lucide-react";
+import type { HistoryEntry, RecoverySummary } from "../types";
 import { compactPath, formatDate, humanSize } from "../format";
 import type { Lang } from "../i18n";
 import { STRINGS } from "../i18n";
@@ -26,12 +26,44 @@ function Spark({ values }: { values: number[] }) {
   );
 }
 
-export function History({ lang, home, history, onClear }: { lang: Lang; home: string; history: HistoryEntry[]; onClear: () => void }) {
+interface Props {
+  lang: Lang;
+  home: string;
+  history: HistoryEntry[];
+  recovery: RecoverySummary;
+  onClear: () => void;
+  onUndo: (index: number) => void;
+  onRestore: (id: string) => void;
+  onPurge: (all: boolean) => void;
+}
+
+export function History({ lang, home, history, recovery, onClear, onUndo, onRestore, onPurge }: Props) {
   const s = STRINGS[lang];
   const [open, setOpen] = useState<number | null>(history.length ? history.length - 1 : null);
   const real = history.filter((h) => !h.dry_run);
   const total = real.reduce((a, h) => a + h.freed, 0);
-  if (history.length === 0) return <div className="panel"><div className="empty"><span className="ei"><HistoryIcon size={24} /></span><strong>{s.historyEmpty}</strong></div></div>;
+  const bin = (
+    <Panel icon={<Archive size={14} />} title={s.recoveryBin} sub={<span className="num">{recovery.items} {s.items} · {humanSize(recovery.bytes)}</span>}>
+      {recovery.entries.length === 0 ? (
+        <div className="help" style={{ color: "var(--ink-3)" }}>—</div>
+      ) : (
+        <div className="recov">
+          {[...recovery.entries].reverse().slice(0, 50).map((e) => (
+            <div className="recov-row" key={e.id}>
+              <span className="size">{humanSize(e.size)}</span>
+              <span style={{ minWidth: 0 }}><strong>{e.label}</strong><code title={e.original}>{compactPath(e.original, home)}</code></span>
+              <button type="button" className="btn sm" onClick={() => onRestore(e.id)}><RotateCcw size={12} /> {s.restore}</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <button type="button" className="btn sm quiet" onClick={() => onPurge(false)} disabled={recovery.items === 0}><Trash2 size={12} /> {s.purgeOld}</button>
+        <button type="button" className="btn sm quiet" onClick={() => onPurge(true)} disabled={recovery.items === 0}><Trash2 size={12} /> {s.emptyBin}</button>
+      </div>
+    </Panel>
+  );
+  if (history.length === 0) return <><div className="panel" style={{ marginBottom: 14 }}><div className="empty"><span className="ei"><HistoryIcon size={24} /></span><strong>{s.historyEmpty}</strong></div></div>{bin}</>;
   return (
     <>
       <div className="hist-top">
@@ -40,19 +72,24 @@ export function History({ lang, home, history, onClear }: { lang: Lang; home: st
           <Spark values={real.map((h) => h.freed)} />
         </Panel>
       </div>
+      <div style={{ marginBottom: 14 }}>{bin}</div>
       {[...history].map((h, i) => ({ h, i })).reverse().map(({ h, i }) => {
         const ok = h.items.filter((x) => x.ok).length;
         const failed = h.items.length - ok;
+        const restorable = h.items.filter((x) => x.recovery_id).length;
         const isOpen = open === i;
         return (
           <section className="panel hist" key={i}>
             <div className="hist-h" onClick={() => setOpen(isOpen ? null : i)}>
-              <span className="hi">{h.dry_run ? <FlaskConical size={14} /> : h.trashed ? <Recycle size={14} /> : <Trash2 size={14} />}</span>
+              <span className="hi">{h.dry_run ? <FlaskConical size={14} /> : h.mode === "recovery" ? <Archive size={14} /> : h.trashed ? <Recycle size={14} /> : <Trash2 size={14} />}</span>
               <div>
                 <div className="w">{isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />} {formatDate(h.at, lang)}</div>
-                <div className="m"><span>{h.items.length} {s.items}</span><span style={{ color: "var(--good)" }}>{ok} {s.ok}</span>{failed > 0 && <span style={{ color: "var(--bad)" }}>{failed} {s.failed}</span>}{h.dry_run && <span>{s.dryRun}</span>}</div>
+                <div className="m"><span>{h.items.length} {s.items}</span><span style={{ color: "var(--good)" }}>{ok} {s.ok}</span>{failed > 0 && <span style={{ color: "var(--bad)" }}>{failed} {s.failed}</span>}{h.dry_run && <span>{s.dryRun}</span>}{h.mode && !h.dry_run && <span>{h.mode}</span>}</div>
               </div>
-              <span className="f">{humanSize(h.freed)}</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {restorable > 0 && <button type="button" className="btn sm" onClick={(e) => { e.stopPropagation(); onUndo(i); }}><RotateCcw size={12} /> {s.restoreRun} ({restorable})</button>}
+                <span className="f">{humanSize(h.freed)}</span>
+              </span>
             </div>
             {isOpen && (
               <div className="hist-items">

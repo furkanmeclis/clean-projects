@@ -5,17 +5,64 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
 
 use super::candidate::{Action, Candidate};
+use super::disk::Volume;
 use super::fsutil::{check_deletable, dir_size, remove_path};
+use super::process::{running_app, running_process_names};
+use super::recovery::{self, Journal};
 use super::state::{HistoryEntry, HistoryItem};
+
+/// How removed files are disposed of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CleanMode {
+    /// Move into the recovery bin (same volume rename, undoable).
+    #[default]
+    Recovery,
+    /// Move to the operating system trash.
+    Trash,
+    /// Delete immediately.
+    Permanent,
+}
+
+impl CleanMode {
+    pub fn parse(s: &str) -> CleanMode {
+        match s.to_ascii_lowercase().as_str() {
+            "trash" => CleanMode::Trash,
+            "permanent" | "delete" => CleanMode::Permanent,
+            _ => CleanMode::Recovery,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CleanMode::Recovery => "recovery",
+            CleanMode::Trash => "trash",
+            CleanMode::Permanent => "permanent",
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct CleanOptions {
     pub dry_run: bool,
-    pub use_trash: bool,
+    pub mode: CleanMode,
     pub home: PathBuf,
     pub protected: Vec<PathBuf>,
+    /// Where the recovery bin lives for the home volume.
+    pub data_dir: PathBuf,
+    pub volumes: Vec<Volume>,
+    /// Refuse items whose owning application is running.
+    pub block_running_apps: bool,
+}
+
+impl CleanOptions {
+    /// Backwards compatible helper for callers that only know about trash on/off.
+    pub fn use_trash(&self) -> bool {
+        self.mode != CleanMode::Permanent
+    }
 }
 
 /// Progress events emitted while cleaning.
@@ -41,17 +88,39 @@ pub enum CleanEvent {
     },
 }
 
-/// Run every candidate in order, reporting through `emit`. Returns the history entry.
+/// Outcome of running a batch: the history entry and the recovery journal entries created.
+pub struct Outcome {
+    pub entry: HistoryEntry,
+    pub recovered: Vec<recovery::RecoveryEntry>,
+}
+
+/// Run every candidate in order, reporting through `emit`.
 pub fn run(
     candidates: &[Candidate],
     opts: &CleanOptions,
     mut emit: impl FnMut(CleanEvent),
 ) -> HistoryEntry {
+    run_with_journal(candidates, opts, &mut emit).entry
+}
+
+/// Like [`run`] but also returns the recovery entries so the caller can persist the journal.
+pub fn run_with_journal(
+    candidates: &[Candidate],
+    opts: &CleanOptions,
+    emit: &mut impl FnMut(CleanEvent),
+) -> Outcome {
     let total = candidates.len();
     let mut freed = 0u64;
     let mut ok = 0usize;
     let mut failed = 0usize;
     let mut items = Vec::with_capacity(total);
+    let mut recovered = Vec::new();
+    let run_id = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let running = if opts.block_running_apps && !opts.dry_run {
+        Some(running_process_names())
+    } else {
+        None
+    };
 
     for (index, c) in candidates.iter().enumerate() {
         emit(CleanEvent::Start {
@@ -60,7 +129,12 @@ pub fn run(
             id: c.id.clone(),
             label: c.label.clone(),
         });
-        let result = execute(c, opts, &mut emit);
+        let result = match (&running, &c.blocked_by) {
+            (Some(names), Some(app)) if running_app(app, names).is_some() => {
+                Err(anyhow!("{app} is running; close it first"))
+            }
+            _ => execute(c, opts, &run_id, &mut recovered, emit),
+        };
         match result {
             Ok(bytes) => {
                 freed += bytes;
@@ -71,6 +145,11 @@ pub fn run(
                     freed: bytes,
                     error: None,
                 });
+                let recovery_id = recovered
+                    .iter()
+                    .rev()
+                    .find(|r| r.candidate_id == c.id)
+                    .map(|r| r.id.clone());
                 items.push(HistoryItem {
                     id: c.id.clone(),
                     label: c.label.clone(),
@@ -78,6 +157,7 @@ pub fn run(
                     size: bytes,
                     ok: true,
                     error: None,
+                    recovery_id,
                 });
             }
             Err(e) => {
@@ -97,23 +177,39 @@ pub fn run(
                     size: 0,
                     ok: false,
                     error: Some(msg),
+                    recovery_id: None,
                 });
             }
         }
     }
     emit(CleanEvent::Done { freed, ok, failed });
-    HistoryEntry {
-        at: chrono::Local::now(),
-        freed,
-        dry_run: opts.dry_run,
-        trashed: opts.use_trash,
-        items,
+    Outcome {
+        entry: HistoryEntry {
+            at: chrono::Local::now(),
+            freed,
+            dry_run: opts.dry_run,
+            trashed: opts.mode != CleanMode::Permanent,
+            mode: opts.mode.as_str().to_string(),
+            items,
+        },
+        recovered,
     }
 }
 
-fn execute(c: &Candidate, opts: &CleanOptions, emit: &mut impl FnMut(CleanEvent)) -> Result<u64> {
+/// Persist recovery entries into the journal file.
+pub fn record_recovered(journal: &mut Journal, recovered: Vec<recovery::RecoveryEntry>) {
+    journal.entries.extend(recovered);
+}
+
+fn execute(
+    c: &Candidate,
+    opts: &CleanOptions,
+    run_id: &str,
+    recovered: &mut Vec<recovery::RecoveryEntry>,
+    emit: &mut impl FnMut(CleanEvent),
+) -> Result<u64> {
     match &c.action {
-        Action::RemovePath { path } => remove(path, c.size, opts, emit),
+        Action::RemovePath { path } => remove(c, path, opts, run_id, recovered, emit),
         Action::RunCommand { program, args, cwd } => {
             let mut cmd = Command::new(program);
             cmd.args(args);
@@ -172,34 +268,49 @@ fn git(repo: &Path) -> Command {
 }
 
 fn remove(
+    c: &Candidate,
     path: &Path,
-    known_size: u64,
     opts: &CleanOptions,
+    run_id: &str,
+    recovered: &mut Vec<recovery::RecoveryEntry>,
     emit: &mut impl FnMut(CleanEvent),
 ) -> Result<u64> {
     check_deletable(path, &opts.home, &opts.protected)
         .map_err(|e| anyhow!("{}: {e}", path.display()))?;
-    let size = if known_size > 0 {
-        known_size
-    } else {
-        dir_size(path)
-    };
+    let size = if c.size > 0 { c.size } else { dir_size(path) };
     if opts.dry_run {
         emit(CleanEvent::Log(format!(
-            "  [dry-run] would remove {}",
-            path.display()
+            "  [dry-run] would remove {} ({})",
+            path.display(),
+            opts.mode.as_str()
         )));
         return Ok(size);
     }
-    if opts.use_trash {
+    let mut mode = opts.mode;
+    if mode == CleanMode::Recovery {
+        let bin = recovery::bin_dir_for(path, &opts.home, &opts.data_dir, &opts.volumes);
+        emit(CleanEvent::Log(format!("  recover → {}", bin.display())));
+        match recovery::move_to_bin(path, &bin, run_id, &c.id, &c.label, size) {
+            Ok(entry) => {
+                recovered.push(entry);
+                return Ok(size);
+            }
+            Err(e) => {
+                emit(CleanEvent::Log(format!(
+                    "  recovery bin unavailable ({}), using trash",
+                    e.0
+                )));
+                mode = CleanMode::Trash;
+            }
+        }
+    }
+    if mode == CleanMode::Trash {
         emit(CleanEvent::Log(format!("  trash {}", path.display())));
         match trash::delete(path) {
             Ok(()) => return Ok(size),
-            Err(e) => {
-                emit(CleanEvent::Log(format!(
-                    "  trash unavailable ({e}), deleting permanently"
-                )));
-            }
+            Err(e) => emit(CleanEvent::Log(format!(
+                "  trash unavailable ({e}), deleting permanently"
+            ))),
         }
     } else {
         emit(CleanEvent::Log(format!("  rm -rf {}", path.display())));
@@ -262,49 +373,105 @@ fn run_command(mut cmd: Command, dry_run: bool, emit: &mut impl FnMut(CleanEvent
     Ok(())
 }
 
+/// Restore every recoverable item of a history entry. Returns (restored, failed messages).
+pub fn undo(entry: &HistoryEntry, journal: &mut Journal) -> (usize, Vec<String>) {
+    let mut restored = 0;
+    let mut errors = Vec::new();
+    let ids: Vec<String> = entry
+        .items
+        .iter()
+        .filter_map(|i| i.recovery_id.clone())
+        .collect();
+    for id in ids {
+        let Some(pos) = journal.entries.iter().position(|e| e.id == id) else {
+            errors.push(format!("{id}: not in recovery bin"));
+            continue;
+        };
+        match recovery::restore(&journal.entries[pos]) {
+            Ok(()) => {
+                journal.entries.remove(pos);
+                restored += 1;
+            }
+            Err(e) => errors.push(format!("{e:#}")),
+        }
+    }
+    (restored, errors)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::candidate::{Category, Risk};
     use std::fs;
 
-    fn opts(home: &Path, dry_run: bool) -> CleanOptions {
+    fn opts(home: &Path, dry_run: bool, mode: CleanMode) -> CleanOptions {
         CleanOptions {
             dry_run,
-            use_trash: false,
+            mode,
             home: home.to_path_buf(),
             protected: vec![home.join("Dropbox")],
+            data_dir: home.join(".local/share/cleanprojects"),
+            volumes: vec![],
+            block_running_apps: false,
         }
     }
 
-    #[test]
-    fn removes_directory_and_records_history() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("home");
-        let target = home.join("proj").join("node_modules");
-        fs::create_dir_all(&target).unwrap();
-        fs::write(target.join("x"), vec![1u8; 2048]).unwrap();
-        let c = Candidate::new(
+    fn cand(path: &Path) -> Candidate {
+        Candidate::new(
             "node_modules",
             "test",
             Category::Project,
             Risk::Low,
             Action::RemovePath {
-                path: target.clone(),
+                path: path.to_path_buf(),
             },
         )
-        .with_size(2048, true);
+        .with_size(2048, true)
+    }
+
+    #[test]
+    fn removes_directory_permanently_and_records_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let target = home.join("proj").join("node_modules");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("x"), vec![1u8; 2048]).unwrap();
+        let c = cand(&target);
         let mut log = Vec::new();
-        let entry = run(std::slice::from_ref(&c), &opts(&home, true), |e| {
-            log.push(e)
-        });
+        let entry = run(
+            std::slice::from_ref(&c),
+            &opts(&home, true, CleanMode::Permanent),
+            |e| log.push(e),
+        );
         assert!(target.exists(), "dry run must not delete");
         assert!(entry.dry_run);
         assert_eq!(entry.freed, 2048);
-        let entry = run(&[c], &opts(&home, false), |_| {});
+        let entry = run(&[c], &opts(&home, false, CleanMode::Permanent), |_| {});
         assert!(!target.exists());
         assert_eq!(entry.freed, 2048);
         assert!(entry.items[0].ok);
+        assert_eq!(entry.mode, "permanent");
+    }
+
+    #[test]
+    fn recovery_mode_is_undoable() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let target = home.join("proj").join("node_modules");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("x"), b"1").unwrap();
+        let o = opts(&home, false, CleanMode::Recovery);
+        let out = run_with_journal(&[cand(&target)], &o, &mut |_| {});
+        assert!(!target.exists());
+        assert_eq!(out.recovered.len(), 1);
+        assert!(out.recovered[0].stored.starts_with(&o.data_dir));
+        assert!(out.entry.items[0].recovery_id.is_some());
+        let mut journal = Journal::default();
+        record_recovered(&mut journal, out.recovered);
+        let (restored, errors) = undo(&out.entry, &mut journal);
+        assert_eq!((restored, errors.len()), (1, 0));
+        assert!(target.join("x").exists());
+        assert!(journal.entries.is_empty());
     }
 
     #[test]
@@ -313,16 +480,11 @@ mod tests {
         let home = dir.path().join("home");
         let target = home.join("Dropbox").join("cache");
         fs::create_dir_all(&target).unwrap();
-        let c = Candidate::new(
-            "cache",
-            "test",
-            Category::Temp,
-            Risk::Low,
-            Action::RemovePath {
-                path: target.clone(),
-            },
+        let entry = run(
+            &[cand(&target)],
+            &opts(&home, false, CleanMode::Permanent),
+            |_| {},
         );
-        let entry = run(&[c], &opts(&home, false), |_| {});
         assert!(target.exists());
         assert!(!entry.items[0].ok);
         assert!(entry.items[0]
@@ -330,6 +492,25 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("protected"));
+    }
+
+    #[test]
+    fn refuses_when_owner_app_is_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let target = home.join("cache");
+        fs::create_dir_all(&target).unwrap();
+        // Any process reported by the OS is, by definition, running.
+        let names = running_process_names();
+        let Some(any) = names.iter().next().cloned() else {
+            return;
+        };
+        let c = cand(&target).with_blocked_by(Some(any));
+        let mut o = opts(&home, false, CleanMode::Permanent);
+        o.block_running_apps = true;
+        let entry = run(&[c], &o, |_| {});
+        assert!(target.exists());
+        assert!(entry.items[0].error.as_deref().unwrap().contains("running"));
     }
 
     #[test]
@@ -347,7 +528,7 @@ mod tests {
                 cwd: None,
             },
         );
-        let entry = run(&[c], &opts(&home, false), |_| {});
+        let entry = run(&[c], &opts(&home, false, CleanMode::Permanent), |_| {});
         assert!(!entry.items[0].ok);
     }
 }

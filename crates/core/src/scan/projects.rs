@@ -414,7 +414,65 @@ pub fn detect_kinds(dir: &Path) -> Vec<ProjectKind> {
     if has("ProjectSettings/ProjectVersion.txt") && has("Assets") {
         kinds.push(ProjectKind::Unity);
     }
+    if has("project.godot") {
+        kinds.push(ProjectKind::Godot);
+    }
+    if has_ext(dir, "uproject") {
+        kinds.push(ProjectKind::Unreal);
+    }
+    if has("build.zig") {
+        kinds.push(ProjectKind::Zig);
+    }
+    if has("stack.yaml") || has("cabal.project") || has_ext(dir, "cabal") {
+        kinds.push(ProjectKind::Haskell);
+    }
+    if has_ext(dir, "tf") {
+        kinds.push(ProjectKind::Terraform);
+    }
+    if has_ext(dir, "ipynb") {
+        kinds.push(ProjectKind::Jupyter);
+    }
+    if has("pixi.toml") {
+        kinds.push(ProjectKind::Pixi);
+    }
     kinds
+}
+
+/// Nearest ancestor (or `start` itself) that is a git working tree root.
+pub fn find_git_root(start: &Path) -> Option<PathBuf> {
+    let mut cur = Some(start);
+    while let Some(dir) = cur {
+        if dir.join(".git").exists() {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// Rust `target/` directories can be cleaned per profile when several exist.
+pub fn split_cargo_target(target: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = fs::read_dir(target) else {
+        return vec![];
+    };
+    let mut subs: Vec<PathBuf> = rd
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.path())
+        .filter(|p| {
+            let n = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            n == "debug" || n == "release" || n == "doc" || n.contains('-')
+        })
+        .collect();
+    subs.sort();
+    if subs.len() >= 2 {
+        subs
+    } else {
+        vec![]
+    }
 }
 
 fn has_ext(dir: &Path, ext: &str) -> bool {
@@ -554,6 +612,25 @@ fn walk_dir(
                 continue;
             }
             artifact_dirs.insert(path.clone());
+            if rule.dir == "target" && kinds.contains(&ProjectKind::Rust) {
+                let parts = split_cargo_target(&path);
+                if !parts.is_empty() {
+                    for part in parts {
+                        let name = part
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        hits.push(ArtifactHit {
+                            project: project.clone(),
+                            path: part,
+                            label: format!("target/{name}"),
+                            description: "Cargo build output for one profile or target triple. Rebuilt on next build.",
+                            risk: rule.risk,
+                        });
+                    }
+                    continue;
+                }
+            }
             hits.push(ArtifactHit {
                 project: project.clone(),
                 path,
@@ -647,7 +724,8 @@ pub fn hit_to_candidate(hit: &ArtifactHit, stale_days: u64) -> Candidate {
             path: hit.path.clone(),
         },
     )
-    .with_modified(modified_at(&hit.path));
+    .with_modified(modified_at(&hit.path))
+    .with_owner(hit.project.name.clone());
     c.project = Some(ProjectInfo {
         root: hit.project.root.clone(),
         name: hit.project.name.clone(),
@@ -741,6 +819,25 @@ mod tests {
         assert_eq!(c.category, Category::Project);
         assert!(c.is_stale());
         assert!(c.project.is_some());
+    }
+
+    #[test]
+    fn cargo_target_split_and_git_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = tmp.path().join("target");
+        fs::create_dir_all(t.join("debug")).unwrap();
+        assert!(
+            split_cargo_target(&t).is_empty(),
+            "single profile stays whole"
+        );
+        fs::create_dir_all(t.join("release")).unwrap();
+        fs::create_dir_all(t.join("aarch64-apple-darwin")).unwrap();
+        assert_eq!(split_cargo_target(&t).len(), 3);
+        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        assert_eq!(find_git_root(&t.join("debug")).unwrap(), tmp.path());
+        assert!(detect_kinds(tmp.path()).is_empty());
+        fs::write(tmp.path().join("project.godot"), "").unwrap();
+        assert_eq!(detect_kinds(tmp.path()), vec![ProjectKind::Godot]);
     }
 
     #[test]

@@ -1,0 +1,27 @@
+# Maintainer: Furkan Meclis
+# AUR package for the terminal binary (binary release). Publish as `cleanprojects-bin`.
+pkgname=cleanprojects-bin
+pkgver=2.1.0
+pkgrel=1
+pkgdesc="Developer disk cleanup: caches, build artifacts, Docker and git worktrees (TUI + CLI)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/furkanmeclis/clean-projects"
+license=('MIT')
+provides=('cleanprojects')
+conflicts=('cleanprojects')
+source_x86_64=("$url/releases/download/v$pkgver/cleanprojects-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("$url/releases/download/v$pkgver/cleanprojects-aarch64-unknown-linux-gnu.tar.gz")
+sha256sums_x86_64=('REPLACE_WITH_SHA256')
+sha256sums_aarch64=('REPLACE_WITH_SHA256')
+
+package() {
+  cd "$srcdir"/cleanprojects-*
+  install -Dm755 cleanprojects "$pkgdir/usr/bin/cleanprojects"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  "$pkgdir/usr/bin/cleanprojects" completions bash > cleanprojects.bash
+  "$pkgdir/usr/bin/cleanprojects" completions zsh > _cleanprojects
+  "$pkgdir/usr/bin/cleanprojects" completions fish > cleanprojects.fish
+  install -Dm644 cleanprojects.bash "$pkgdir/usr/share/bash-completion/completions/cleanprojects"
+  install -Dm644 _cleanprojects "$pkgdir/usr/share/zsh/site-functions/_cleanprojects"
+  install -Dm644 cleanprojects.fish "$pkgdir/usr/share/fish/vendor_completions.d/cleanprojects.fish"
+}

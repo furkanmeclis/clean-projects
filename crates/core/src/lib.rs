@@ -7,12 +7,14 @@ pub mod core;
 pub mod scan;
 
 pub use core::candidate::{Action, Candidate, Category, ProjectInfo, ProjectKind, Risk};
-pub use core::cleaner::{self, CleanEvent, CleanOptions};
-pub use core::disk::{disk_for, DiskInfo};
+pub use core::cleaner::{self, CleanEvent, CleanMode, CleanOptions};
+pub use core::disk::{disk_for, volumes, DiskInfo, Volume, VolumeKind};
 pub use core::fsutil;
 pub use core::i18n::{Lang, Strings};
+pub use core::recovery::{self as recovery, Journal, RecoveryEntry};
 pub use core::state::{Config, HistoryEntry, HistoryItem, Paths, State};
-pub use scan::{scan, scan_blocking, ScanContext, ScanEvent, ScanResult};
+pub use scan::tree::{list_dir, tree, Node, TreeNode};
+pub use scan::{load_cache, save_cache, scan, scan_blocking, ScanContext, ScanEvent, ScanResult};
 
 /// Crate version, shared by every front end.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

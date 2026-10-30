@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, CircleCheckBig, FlaskConical, Loader2, Recycle, ShieldAlert, Trash2, TriangleAlert, X, Layers, HardDrive } from "lucide-react";
-import type { Candidate, HistoryEntry } from "../types";
+import { Archive, Check, CircleCheckBig, FlaskConical, Loader2, Recycle, ShieldAlert, Trash2, TriangleAlert, X, Layers, HardDrive, Lock } from "lucide-react";
+import type { Candidate, CleanMode, HistoryEntry } from "../types";
 import { humanSize } from "../format";
 import type { Lang } from "../i18n";
 import { STRINGS } from "../i18n";
@@ -16,18 +16,21 @@ interface Props {
   lang: Lang;
   items: Candidate[];
   phase: Phase;
-  useTrash: boolean;
+  mode: CleanMode;
   dryRun: boolean;
-  onUseTrash: (v: boolean) => void;
+  force: boolean;
+  onMode: (m: CleanMode) => void;
   onDryRun: (v: boolean) => void;
+  onForce: (v: boolean) => void;
   onRun: () => void;
   onClose: () => void;
 }
 
-export function CleanModal({ lang, items, phase, useTrash, dryRun, onUseTrash, onDryRun, onRun, onClose }: Props) {
+export function CleanModal({ lang, items, phase, mode, dryRun, force, onMode, onDryRun, onForce, onRun, onClose }: Props) {
   const s = STRINGS[lang];
   const total = items.reduce((a, c) => a + c.size, 0);
   const high = items.filter((c) => c.risk === "high").length;
+  const blocked = items.filter((c) => c.blocked_by);
   const logRef = useRef<HTMLDivElement>(null);
   const [showLog, setShowLog] = useState(false);
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; });
@@ -54,16 +57,23 @@ export function CleanModal({ lang, items, phase, useTrash, dryRun, onUseTrash, o
               </div>
               <p>{s.confirmBody}</p>
               {high > 0 && <div className="warnbox"><TriangleAlert size={16} /> {s.highWarning}</div>}
-              <div className="modes">
-                <button type="button" className={useTrash && !dryRun ? "active" : ""} onClick={() => { onUseTrash(true); onDryRun(false); }}><Recycle size={15} /><span>{s.trashMode}</span><small>{lang === "tr" ? "geri alınabilir" : "recoverable"}</small></button>
-                <button type="button" className={!useTrash && !dryRun ? "active" : ""} onClick={() => { onUseTrash(false); onDryRun(false); }}><Trash2 size={15} /><span>{s.permanentMode}</span><small>{lang === "tr" ? "geri alınamaz" : "irreversible"}</small></button>
+              {blocked.length > 0 && (
+                <div className="warnbox" style={{ display: "grid", gap: 6 }}>
+                  <span style={{ display: "flex", gap: 8, alignItems: "center" }}><Lock size={16} /> {[...new Set(blocked.map((c) => c.blocked_by))].join(", ")} · {s.blockedBy}</span>
+                  <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 600, fontSize: 12.5 }}><input type="checkbox" id="force-clean" checked={force} onChange={(e) => onForce(e.target.checked)} /> {s.force}</label>
+                </div>
+              )}
+              <div className="modes" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
+                <button type="button" className={mode === "recovery" && !dryRun ? "active" : ""} onClick={() => { onMode("recovery"); onDryRun(false); }}><Archive size={15} /><span>{s.recoveryMode}</span><small>{s.recoveryHint}</small></button>
+                <button type="button" className={mode === "trash" && !dryRun ? "active" : ""} onClick={() => { onMode("trash"); onDryRun(false); }}><Recycle size={15} /><span>{s.trashMode}</span><small>{s.trashHint2}</small></button>
+                <button type="button" className={mode === "permanent" && !dryRun ? "active" : ""} onClick={() => { onMode("permanent"); onDryRun(false); }}><Trash2 size={15} /><span>{s.permanentMode}</span><small>{s.permanentHint}</small></button>
                 <button type="button" className={dryRun ? "active" : ""} onClick={() => onDryRun(true)}><FlaskConical size={15} /><span>{s.dryRun}</span><small>{lang === "tr" ? "sadece göster" : "simulate only"}</small></button>
               </div>
             </div>
             <div className="m-f">
               <span style={{ color: "var(--ink-3)", fontSize: 12, marginRight: "auto", display: "flex", gap: 6, alignItems: "center" }}><span className="kbd">Esc</span>{s.cancel}<span className="kbd" style={{ marginLeft: 8 }}>↵</span>{s.run}</span>
               <button type="button" className="btn quiet" onClick={onClose}>{s.cancel}</button>
-              <button type="button" className={`btn ${dryRun ? "ink" : useTrash ? "ember" : "danger"}`} onClick={onRun}>{dryRun ? <FlaskConical size={14} /> : useTrash ? <Recycle size={14} /> : <Trash2 size={14} />}{dryRun ? s.dryRun : s.run}</button>
+              <button type="button" className={`btn ${dryRun ? "ink" : mode === "permanent" ? "danger" : "ember"}`} onClick={onRun}>{dryRun ? <FlaskConical size={14} /> : mode === "permanent" ? <Trash2 size={14} /> : <Archive size={14} />}{dryRun ? s.dryRun : s.run}</button>
             </div>
           </>
         )}
@@ -84,7 +94,7 @@ export function CleanModal({ lang, items, phase, useTrash, dryRun, onUseTrash, o
             <div className="m-h"><span className="mi good"><CircleCheckBig size={17} /></span><h2>{s.done}{phase.entry.dry_run ? ` · ${s.dryRun}` : ""}</h2></div>
             <div className="m-b">
               <div className="res">
-                <div className="big"><strong>{humanSize(phase.entry.freed)}</strong><span>{s.freed}</span></div>
+                <div className="big"><strong>{humanSize(phase.entry.freed)}</strong><span>{s.freed}{phase.entry.mode === "recovery" && !phase.entry.dry_run ? ` · ${s.recoveryMode.toLowerCase()}` : ""}</span></div>
                 <div><Check size={16} style={{ color: "var(--good)" }} /><strong>{phase.entry.items.filter((i) => i.ok).length}</strong><span>{s.ok}</span></div>
                 <div><X size={16} style={{ color: phase.entry.items.some((i) => !i.ok) ? "var(--bad)" : "var(--ink-3)" }} /><strong>{phase.entry.items.filter((i) => !i.ok).length}</strong><span>{s.failed}</span></div>
               </div>

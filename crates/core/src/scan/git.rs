@@ -101,6 +101,26 @@ fn git_output(repo: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// True when git tracks at least one file under `dir` (relative to its repository).
+/// Such directories are committed sources, never build output, and must not be deleted.
+pub fn has_tracked_files(repo: &Path, dir: &Path) -> bool {
+    let rel = match dir.strip_prefix(repo) {
+        Ok(r) => r.to_path_buf(),
+        Err(_) => return false,
+    };
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(repo)
+        .args(["ls-files", "-z", "--"])
+        .arg(&rel);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    match run_with_timeout(cmd, GIT_TIMEOUT) {
+        Some(out) if out.status.success() => !out.stdout.is_empty(),
+        _ => false,
+    }
+}
+
 /// Determine the default branch (`main`, `master` or origin/HEAD target).
 pub fn default_branch(repo: &Path) -> Option<String> {
     if let Some(s) = git_output(
@@ -388,6 +408,13 @@ mod tests {
         // merged-feature is checked out in the (missing) worktree → not offered as branch delete
         assert!(!cands.iter().any(|c| matches!(&c.action, Action::GitBranchDelete { branch, .. } if branch == "merged-feature")));
         git(&["worktree", "prune"]);
+        std::fs::create_dir_all(repo.join("vendor")).unwrap();
+        std::fs::write(repo.join("vendor/lib.php"), "x").unwrap();
+        git(&["add", "vendor"]);
+        git(&["commit", "-q", "-m", "vendor"]);
+        assert!(has_tracked_files(&repo, &repo.join("vendor")));
+        std::fs::create_dir_all(repo.join("node_modules/x")).unwrap();
+        assert!(!has_tracked_files(&repo, &repo.join("node_modules")));
         let cands = analyze_repo(&repo, &cfg);
         assert!(cands.iter().any(|c| matches!(&c.action, Action::GitBranchDelete { branch, .. } if branch == "merged-feature")), "{cands:?}");
     }

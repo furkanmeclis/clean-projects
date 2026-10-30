@@ -1,17 +1,27 @@
 //! Tauri backend: thin command layer over `cleanprojects-core`.
-//! Long-running work (scan, clean) runs on threads and streams events to the webview.
+//! Long-running work (scan, clean, directory sizing) runs on threads and
+//! streams events to the webview. A system tray keeps the app resident for
+//! scheduled background scans.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
-use cleanprojects_core::cleaner::{self, CleanEvent, CleanOptions};
+use cleanprojects_core::cleaner::{self, CleanEvent, CleanMode, CleanOptions};
 use cleanprojects_core::fsutil::{compact_path, human_size};
+use cleanprojects_core::recovery;
 use cleanprojects_core::scan::{self, ScanContext, ScanEvent, ScanResult};
-use cleanprojects_core::{disk_for, Candidate, Config, DiskInfo, HistoryEntry, Paths, State};
+use cleanprojects_core::{
+    disk_for, volumes, Candidate, Config, DiskInfo, HistoryEntry, Journal, Node, Paths, State,
+    TreeNode, Volume,
+};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State as TauriState};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{TrayIcon, TrayIconBuilder};
+use tauri::{AppHandle, Emitter, Manager, State as TauriState, WindowEvent};
+use tauri_plugin_notification::NotificationExt;
 
 pub struct AppState {
     paths: Paths,
@@ -20,6 +30,7 @@ pub struct AppState {
     last_scan: Mutex<Option<ScanResult>>,
     scanning: AtomicBool,
     cleaning: AtomicBool,
+    tray: Mutex<Option<TrayIcon>>,
 }
 
 #[derive(Serialize)]
@@ -28,15 +39,27 @@ struct Bootstrap {
     os: String,
     home: String,
     config_path: String,
+    data_dir: String,
     config: Config,
     excluded: Vec<String>,
     history: Vec<HistoryEntry>,
     disk: DiskInfo,
+    volumes: Vec<Volume>,
     roots: Vec<String>,
     protected: Vec<String>,
     tools: Vec<(String, bool)>,
     candidates: Vec<Candidate>,
+    cached: bool,
+    guarded: usize,
     scanning: bool,
+    recovery: RecoverySummary,
+}
+
+#[derive(Serialize, Clone)]
+struct RecoverySummary {
+    items: usize,
+    bytes: u64,
+    entries: Vec<recovery::RecoveryEntry>,
 }
 
 #[derive(Serialize, Clone)]
@@ -45,8 +68,11 @@ struct ScanSummary {
     total: u64,
     projects: usize,
     repos: usize,
+    guarded: usize,
     duration_ms: u128,
     disk: DiskInfo,
+    volumes: Vec<Volume>,
+    background: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -54,6 +80,7 @@ struct CleanDone {
     entry: HistoryEntry,
     disk: DiskInfo,
     removed_ids: Vec<String>,
+    recovery: RecoverySummary,
 }
 
 #[derive(Deserialize, Default)]
@@ -66,6 +93,10 @@ pub struct ScanOptions {
     pub no_projects: bool,
     #[serde(default)]
     pub no_global: bool,
+    #[serde(default)]
+    pub no_extras: bool,
+    #[serde(default)]
+    pub background: bool,
 }
 
 #[derive(Deserialize)]
@@ -73,7 +104,9 @@ pub struct CleanRequest {
     pub ids: Vec<String>,
     #[serde(default)]
     pub dry_run: bool,
-    pub use_trash: Option<bool>,
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub force: bool,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -82,28 +115,75 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     format!("{e:#}")
 }
 
+fn recovery_summary(paths: &Paths) -> RecoverySummary {
+    let mut j = paths.load_journal();
+    j.prune_missing();
+    RecoverySummary {
+        items: j.entries.len(),
+        bytes: j.total_size(),
+        entries: j.entries,
+    }
+}
+
+fn set_tray_title(app: &AppHandle, total: u64) {
+    let st = app.state::<AppState>();
+    let guard = st.tray.lock().unwrap();
+    if let Some(tray) = guard.as_ref() {
+        let tooltip = if total > 0 {
+            format!("CleanProjects · {} recoverable", human_size(total))
+        } else {
+            "CleanProjects".to_string()
+        };
+        #[cfg(target_os = "macos")]
+        {
+            let text = if total > 0 {
+                human_size(total)
+            } else {
+                String::new()
+            };
+            let _ = tray.set_title(Some(text));
+        }
+        let _ = tray.set_tooltip(Some(tooltip));
+    }
+}
+
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
 #[tauri::command]
-fn bootstrap(app: AppHandle, st: TauriState<AppState>) -> CmdResult<Bootstrap> {
+fn bootstrap(st: TauriState<AppState>) -> CmdResult<Bootstrap> {
     let config = st.config.lock().unwrap().clone();
     let state = st.state.lock().unwrap().clone();
     let ctx = ScanContext::new(st.paths.home.clone(), config.clone());
-    let candidates = st
-        .last_scan
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|r| r.candidates.clone())
-        .unwrap_or_default();
-    let _ = app;
+    let mut cached = false;
+    let (candidates, guarded) = {
+        let mut last = st.last_scan.lock().unwrap();
+        if last.is_none() {
+            if let Some(c) = cleanprojects_core::load_cache(&st.paths.scan_cache_file) {
+                cached = true;
+                *last = Some(c);
+            }
+        }
+        last.as_ref()
+            .map(|r| (r.candidates.clone(), r.guarded))
+            .unwrap_or_default()
+    };
     Ok(Bootstrap {
         version: cleanprojects_core::VERSION.to_string(),
         os: std::env::consts::OS.to_string(),
         home: st.paths.home.display().to_string(),
         config_path: st.paths.config_file.display().to_string(),
+        data_dir: st.paths.data_dir.display().to_string(),
         config,
         excluded: state.excluded.iter().cloned().collect(),
         history: state.history,
         disk: disk_for(&st.paths.home),
+        volumes: ctx.volumes.clone(),
         roots: ctx
             .roots
             .iter()
@@ -120,8 +200,77 @@ fn bootstrap(app: AppHandle, st: TauriState<AppState>) -> CmdResult<Bootstrap> {
             .map(|(t, ok)| (t.to_string(), ok))
             .collect(),
         candidates,
+        cached,
+        guarded,
         scanning: st.scanning.load(Ordering::SeqCst),
+        recovery: recovery_summary(&st.paths),
     })
+}
+
+fn run_scan_thread(app: AppHandle, ctx: ScanContext, background: bool) {
+    std::thread::spawn(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx2 = ctx.clone();
+        let worker = std::thread::spawn(move || scan::scan(&ctx2, tx));
+        for ev in rx {
+            match ev {
+                ScanEvent::Progress { phase, message } => {
+                    let _ = app.emit(
+                        "scan://progress",
+                        serde_json::json!({ "phase": phase, "message": message }),
+                    );
+                }
+                ScanEvent::Found(c) => {
+                    let _ = app.emit("scan://found", *c);
+                }
+                ScanEvent::Done(_) => {}
+            }
+        }
+        let Ok(result) = worker.join() else {
+            app.state::<AppState>()
+                .scanning
+                .store(false, Ordering::SeqCst);
+            return;
+        };
+        let st = app.state::<AppState>();
+        let _ = cleanprojects_core::save_cache(&st.paths.scan_cache_file, &result);
+        let total = result.total();
+        let summary = ScanSummary {
+            candidates: result.candidates.len(),
+            total,
+            projects: result.projects,
+            repos: result.repos,
+            guarded: result.guarded,
+            duration_ms: result.duration_ms,
+            disk: result.disk.clone(),
+            volumes: result.volumes.clone(),
+            background,
+        };
+        {
+            let mut s = st.state.lock().unwrap();
+            s.last_scan_at = Some(result.started_at);
+            s.last_recoverable = total;
+            let _ = st.paths.save_state(&s);
+        }
+        *st.last_scan.lock().unwrap() = Some(result);
+        st.scanning.store(false, Ordering::SeqCst);
+        set_tray_title(&app, total);
+        let _ = app.emit("scan://done", summary);
+        if background {
+            let threshold = st.config.lock().unwrap().ui.notify_threshold_gb * 1024 * 1024 * 1024;
+            if total >= threshold {
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title("CleanProjects")
+                    .body(format!(
+                        "{} can be reclaimed. Open the app to review.",
+                        human_size(total)
+                    ))
+                    .show();
+            }
+        }
+    });
 }
 
 #[tauri::command]
@@ -142,54 +291,8 @@ fn start_scan(
     ctx.include_tools = !options.no_tools;
     ctx.include_projects = !options.no_projects;
     ctx.include_global = !options.no_global;
-    let app2 = app.clone();
-    std::thread::spawn(move || {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let ctx2 = ctx.clone();
-        let worker = std::thread::spawn(move || scan::scan(&ctx2, tx));
-        for ev in rx {
-            match ev {
-                ScanEvent::Progress { phase, message } => {
-                    let _ = app2.emit(
-                        "scan://progress",
-                        serde_json::json!({ "phase": phase, "message": message }),
-                    );
-                }
-                ScanEvent::Found(c) => {
-                    let _ = app2.emit("scan://found", *c);
-                }
-                ScanEvent::Done(_) => {}
-            }
-        }
-        let result = worker.join().unwrap_or_else(|_| ScanResult {
-            candidates: vec![],
-            disk: DiskInfo::default(),
-            roots: vec![],
-            protected: vec![],
-            projects: 0,
-            repos: 0,
-            started_at: chrono::Local::now(),
-            duration_ms: 0,
-        });
-        let st = app2.state::<AppState>();
-        let summary = ScanSummary {
-            candidates: result.candidates.len(),
-            total: result.total(),
-            projects: result.projects,
-            repos: result.repos,
-            duration_ms: result.duration_ms,
-            disk: result.disk.clone(),
-        };
-        {
-            let mut s = st.state.lock().unwrap();
-            s.last_scan_at = Some(result.started_at);
-            s.last_recoverable = result.total();
-            let _ = st.paths.save_state(&s);
-        }
-        *st.last_scan.lock().unwrap() = Some(result);
-        st.scanning.store(false, Ordering::SeqCst);
-        let _ = app2.emit("scan://done", summary);
-    });
+    ctx.include_extras = !options.no_extras;
+    run_scan_thread(app, ctx, options.background);
     Ok(())
 }
 
@@ -228,16 +331,24 @@ fn start_clean(app: AppHandle, st: TauriState<AppState>, request: CleanRequest) 
     }
     let config = st.config.lock().unwrap().clone();
     let ctx = ScanContext::new(st.paths.home.clone(), config.clone());
+    let mode = request
+        .mode
+        .as_deref()
+        .map(CleanMode::parse)
+        .unwrap_or_else(|| CleanMode::parse(&config.clean.mode));
     let opts = CleanOptions {
         dry_run: request.dry_run,
-        use_trash: request.use_trash.unwrap_or(config.clean.use_trash),
+        mode,
         home: st.paths.home.clone(),
         protected: ctx.protected,
+        data_dir: st.paths.data_dir.clone(),
+        volumes: ctx.volumes,
+        block_running_apps: config.clean.block_running_apps && !request.force,
     };
     let app2 = app.clone();
     std::thread::spawn(move || {
         let app3 = app2.clone();
-        let entry = cleaner::run(&items, &opts, |ev| match ev {
+        let outcome = cleaner::run_with_journal(&items, &opts, &mut |ev| match ev {
             CleanEvent::Start {
                 index,
                 total,
@@ -263,6 +374,12 @@ fn start_clean(app: AppHandle, st: TauriState<AppState>, request: CleanRequest) 
             CleanEvent::Done { .. } => {}
         });
         let st = app2.state::<AppState>();
+        if !outcome.recovered.is_empty() {
+            let mut journal = st.paths.load_journal();
+            cleaner::record_recovered(&mut journal, outcome.recovered);
+            let _ = st.paths.save_journal(&journal);
+        }
+        let entry = outcome.entry;
         let removed_ids: Vec<String> = if entry.dry_run {
             vec![]
         } else {
@@ -273,8 +390,11 @@ fn start_clean(app: AppHandle, st: TauriState<AppState>, request: CleanRequest) 
                 .map(|i| i.id.clone())
                 .collect()
         };
+        let mut total = 0;
         if let Some(scan) = st.last_scan.lock().unwrap().as_mut() {
             scan.candidates.retain(|c| !removed_ids.contains(&c.id));
+            total = scan.total();
+            let _ = cleanprojects_core::save_cache(&st.paths.scan_cache_file, scan);
         }
         {
             let mut s = st.state.lock().unwrap();
@@ -282,23 +402,97 @@ fn start_clean(app: AppHandle, st: TauriState<AppState>, request: CleanRequest) 
             let _ = st.paths.save_state(&s);
         }
         st.paths.append_log(&format!(
-            "clean dry_run={} trash={} freed={} items={}",
+            "clean dry_run={} mode={} freed={} items={}",
             entry.dry_run,
-            entry.trashed,
+            entry.mode,
             entry.freed,
             entry.items.len()
         ));
         st.cleaning.store(false, Ordering::SeqCst);
+        set_tray_title(&app2, total);
         let _ = app2.emit(
             "clean://done",
             CleanDone {
                 entry,
                 disk: disk_for(&st.paths.home),
                 removed_ids,
+                recovery: recovery_summary(&st.paths),
             },
         );
     });
     Ok(())
+}
+
+#[tauri::command]
+fn undo_run(st: TauriState<AppState>, index: usize) -> CmdResult<(usize, Vec<String>)> {
+    let mut state = st.state.lock().unwrap();
+    let Some(entry) = state.history.get(index).cloned() else {
+        return Err("no such run".into());
+    };
+    let mut journal = st.paths.load_journal();
+    let (restored, errors) = cleaner::undo(&entry, &mut journal);
+    st.paths.save_journal(&journal).map_err(err)?;
+    if let Some(e) = state.history.get_mut(index) {
+        for item in e.items.iter_mut() {
+            if item.recovery_id.is_some() && !errors.iter().any(|m| m.contains(&item.label)) {
+                item.recovery_id = None;
+            }
+        }
+    }
+    st.paths.save_state(&state).map_err(err)?;
+    Ok((restored, errors))
+}
+
+#[tauri::command]
+fn restore_entry(st: TauriState<AppState>, id: String) -> CmdResult<RecoverySummary> {
+    let mut journal = st.paths.load_journal();
+    let Some(pos) = journal.entries.iter().position(|e| e.id == id) else {
+        return Err("not in recovery bin".into());
+    };
+    recovery::restore(&journal.entries[pos]).map_err(err)?;
+    journal.entries.remove(pos);
+    st.paths.save_journal(&journal).map_err(err)?;
+    let mut state = st.state.lock().unwrap();
+    for h in state.history.iter_mut() {
+        for item in h.items.iter_mut() {
+            if item.recovery_id.as_deref() == Some(&id) {
+                item.recovery_id = None;
+            }
+        }
+    }
+    let _ = st.paths.save_state(&state);
+    Ok(recovery_summary(&st.paths))
+}
+
+#[tauri::command]
+fn recovery_purge(st: TauriState<AppState>, all: bool) -> CmdResult<RecoverySummary> {
+    let mut journal: Journal = st.paths.load_journal();
+    if all {
+        for e in &journal.entries {
+            let _ = recovery::purge_entry(e);
+        }
+        journal.entries.clear();
+    } else {
+        let days = st.config.lock().unwrap().clean.recovery_days;
+        recovery::purge_older_than(&mut journal, days);
+    }
+    st.paths.save_journal(&journal).map_err(err)?;
+    let ids: HashSet<String> = journal.entries.iter().map(|e| e.id.clone()).collect();
+    let mut state = st.state.lock().unwrap();
+    for h in state.history.iter_mut() {
+        for item in h.items.iter_mut() {
+            if item
+                .recovery_id
+                .as_ref()
+                .map(|i| !ids.contains(i))
+                .unwrap_or(false)
+            {
+                item.recovery_id = None;
+            }
+        }
+    }
+    let _ = st.paths.save_state(&state);
+    Ok(recovery_summary(&st.paths))
 }
 
 #[tauri::command]
@@ -310,10 +504,20 @@ fn toggle_exclude(st: TauriState<AppState>, id: String) -> CmdResult<bool> {
 }
 
 #[tauri::command]
-fn save_config(st: TauriState<AppState>, config: Config) -> CmdResult<Config> {
+fn save_config(app: AppHandle, st: TauriState<AppState>, config: Config) -> CmdResult<Config> {
     st.paths.save_config(&config).map_err(err)?;
     *st.config.lock().unwrap() = config.clone();
+    apply_autostart(
+        &app,
+        config.ui.scan_interval_hours > 0 && config.ui.close_to_tray,
+    );
     Ok(config)
+}
+
+fn apply_autostart(app: &AppHandle, enabled: bool) {
+    use tauri_plugin_autostart::ManagerExt;
+    let m = app.autolaunch();
+    let _ = if enabled { m.enable() } else { m.disable() };
 }
 
 #[tauri::command]
@@ -326,6 +530,70 @@ fn clear_history(st: TauriState<AppState>) -> CmdResult<()> {
     let mut s = st.state.lock().unwrap();
     s.history.clear();
     st.paths.save_state(&s).map_err(err)
+}
+
+#[tauri::command]
+fn list_volumes(st: TauriState<AppState>) -> Vec<Volume> {
+    volumes(&st.paths.home)
+}
+
+#[tauri::command]
+async fn explore_dir(path: String) -> Vec<Node> {
+    let p = PathBuf::from(path);
+    tauri::async_runtime::spawn_blocking(move || cleanprojects_core::list_dir(&p))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn explore_tree(path: String, depth: Option<usize>, top: Option<usize>) -> Vec<TreeNode> {
+    let p = PathBuf::from(path);
+    let depth = depth.unwrap_or(2).clamp(1, 4);
+    let top = top.unwrap_or(24).clamp(4, 60);
+    tauri::async_runtime::spawn_blocking(move || cleanprojects_core::tree(&p, depth, top))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn add_manual_candidate(st: TauriState<AppState>, path: String) -> CmdResult<Candidate> {
+    let p = PathBuf::from(&path);
+    if !p.exists() {
+        return Err("path does not exist".into());
+    }
+    let m = cleanprojects_core::fsutil::measure(&p);
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or(path.clone());
+    let c = Candidate::new(
+        name,
+        "Picked in the explorer. Review carefully: this was not matched by a cleanup rule.",
+        cleanprojects_core::Category::Temp,
+        cleanprojects_core::Risk::High,
+        cleanprojects_core::Action::RemovePath { path: p.clone() },
+    )
+    .with_measure(m)
+    .with_modified(cleanprojects_core::fsutil::modified_at(&p))
+    .with_owner("Explorer")
+    .with_tag("manual");
+    let mut last = st.last_scan.lock().unwrap();
+    let scan = last.get_or_insert_with(|| ScanResult {
+        candidates: vec![],
+        disk: disk_for(&st.paths.home),
+        volumes: vec![],
+        roots: vec![],
+        protected: vec![],
+        projects: 0,
+        repos: 0,
+        guarded: 0,
+        started_at: chrono::Local::now(),
+        duration_ms: 0,
+    });
+    if !scan.candidates.iter().any(|x| x.id == c.id) {
+        scan.candidates.push(c.clone());
+    }
+    Ok(c)
 }
 
 #[tauri::command]
@@ -350,13 +618,16 @@ fn write_report(st: TauriState<AppState>, path: String, ids: Vec<String>) -> Cmd
         human_size(result.disk.free),
         human_size(result.disk.total)
     ));
-    s.push_str("| Size | Risk | Category | Item | Path / command |\n|---:|---|---|---|---|\n");
+    s.push_str(
+        "| Size | Risk | Category | Owner | Item | Path / command |\n|---:|---|---|---|---|---|\n",
+    );
     for c in &items {
         s.push_str(&format!(
-            "| {} | {} | {} | {} | `{}` |\n",
+            "| {} | {} | {} | {} | {} | `{}` |\n",
             human_size(c.size),
             c.risk.as_str(),
             c.category.as_str(),
+            c.owner_or_label(),
             c.label.replace('|', "\\|"),
             compact_path(std::path::Path::new(&c.detail()), &st.paths.home)
         ));
@@ -372,14 +643,114 @@ fn path_exists(path: String) -> bool {
     PathBuf::from(path).exists()
 }
 
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
+fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
+    let open = MenuItem::with_id(app, "open", "Open CleanProjects", true, None::<&str>)?;
+    let rescan = MenuItem::with_id(app, "rescan", "Rescan now", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &rescan, &quit])?;
+    let mut builder = TrayIconBuilder::with_id("main")
+        .menu(&menu)
+        .tooltip("CleanProjects")
+        .show_menu_on_left_click(false);
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.icon_as_template(false);
+    }
+    builder
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_main(app),
+            "rescan" => {
+                show_main(app);
+                let st = app.state::<AppState>();
+                if !st.scanning.swap(true, Ordering::SeqCst) {
+                    let cfg = st.config.lock().unwrap().clone();
+                    run_scan_thread(
+                        app.clone(),
+                        ScanContext::new(st.paths.home.clone(), cfg),
+                        false,
+                    );
+                }
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let tauri::tray::TrayIconEvent::Click {
+                button: tauri::tray::MouseButton::Left,
+                ..
+            } = event
+            {
+                show_main(tray.app_handle());
+            }
+        })
+        .build(app)
+}
+
+fn start_scheduler(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        let hours = app
+            .state::<AppState>()
+            .config
+            .lock()
+            .unwrap()
+            .ui
+            .scan_interval_hours;
+        if hours == 0 {
+            std::thread::sleep(Duration::from_secs(600));
+            continue;
+        }
+        std::thread::sleep(Duration::from_secs(hours * 3600));
+        let st = app.state::<AppState>();
+        let hours_now = st.config.lock().unwrap().ui.scan_interval_hours;
+        if hours_now == 0 || st.scanning.swap(true, Ordering::SeqCst) {
+            continue;
+        }
+        let cfg = st.config.lock().unwrap().clone();
+        run_scan_thread(
+            app.clone(),
+            ScanContext::new(st.paths.home.clone(), cfg),
+            true,
+        );
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let paths = Paths::discover().expect("cannot resolve home directory");
     let config = paths.load_config().unwrap_or_default();
     let state = paths.load_state().unwrap_or_default();
-    tauri::Builder::default()
+    // Purge recovery bin entries past retention on every launch.
+    {
+        let mut journal = paths.load_journal();
+        journal.prune_missing();
+        recovery::purge_older_than(&mut journal, config.clean.recovery_days.max(1));
+        let _ = paths.save_journal(&journal);
+    }
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main(app)
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--background"]),
+        ));
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    builder
         .manage(AppState {
             paths,
             config: Mutex::new(config),
@@ -387,18 +758,54 @@ pub fn run() {
             last_scan: Mutex::new(None),
             scanning: AtomicBool::new(false),
             cleaning: AtomicBool::new(false),
+            tray: Mutex::new(None),
+        })
+        .setup(|app| {
+            let handle = app.handle().clone();
+            match build_tray(&handle) {
+                Ok(tray) => *app.state::<AppState>().tray.lock().unwrap() = Some(tray),
+                Err(e) => eprintln!("tray unavailable: {e}"),
+            }
+            let st = app.state::<AppState>();
+            let cached_total = st.state.lock().unwrap().last_recoverable;
+            set_tray_title(&handle, cached_total);
+            start_scheduler(handle.clone());
+            if std::env::args().any(|a| a == "--background") {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let st = window.app_handle().state::<AppState>();
+                let to_tray = st.config.lock().unwrap().ui.close_to_tray;
+                if to_tray && st.tray.lock().unwrap().is_some() {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             start_scan,
             get_candidates,
             start_clean,
+            undo_run,
+            restore_entry,
+            recovery_purge,
             toggle_exclude,
             save_config,
             get_history,
             clear_history,
+            list_volumes,
+            explore_dir,
+            explore_tree,
+            add_manual_candidate,
             write_report,
-            path_exists
+            path_exists,
+            quit_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running CleanProjects");

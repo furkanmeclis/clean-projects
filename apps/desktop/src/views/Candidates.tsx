@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, Calendar, ChevronDown, EyeOff, FileText, Fingerprint, FolderGit2, FolderOpen, FolderSearch, Hourglass, Info, ListFilter, RotateCcw, Search, Sparkles, SquareCheckBig, SquareDashed, X } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Calendar, ChevronDown, EyeOff, FileText, Fingerprint, FolderGit2, FolderOpen, FolderSearch, Hourglass, Info, Layers, ListFilter, Lock, RotateCcw, Search, Sparkles, SquareCheckBig, SquareDashed, Usb, X } from "lucide-react";
 import type { Candidate, Category, Risk } from "../types";
 import { CATEGORIES, actionDisplay, actionPath } from "../types";
 import { ageDays, ageLabel, compactPath, formatDate, humanSize } from "../format";
@@ -8,6 +8,7 @@ import { CATEGORY_LABELS, STRINGS } from "../i18n";
 import { CATEGORY_ICON, CATEGORY_VAR, CategoryBadge, CheckBox, RiskPill, Tags } from "../components/common";
 
 export type SortKey = "size" | "name" | "age" | "risk";
+export type GroupKey = "none" | "category" | "owner" | "project" | "volume";
 
 interface Props {
   lang: Lang;
@@ -37,6 +38,8 @@ export function Candidates(p: Props) {
   const [showExcluded, setShowExcluded] = useState(false);
   const [sort, setSort] = useState<SortKey>("size");
   const [desc, setDesc] = useState(true);
+  const [group, setGroup] = useState<GroupKey>("none");
+  const [groupOpen, setGroupOpen] = useState(false);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -63,6 +66,22 @@ export function Candidates(p: Props) {
     return rows;
   }, [p.candidates, p.excluded, query, risk, category, staleOnly, showExcluded, sort, desc]);
 
+  const groupKey = (c: Candidate): string => {
+    switch (group) {
+      case "category": return CATEGORY_LABELS[p.lang][c.category];
+      case "owner": return c.owner || c.label.split(" ")[0];
+      case "project": return c.project?.name ?? "—";
+      case "volume": return c.volume ?? "/";
+      default: return "";
+    }
+  };
+  const grouped = useMemo(() => {
+    if (group === "none") return [{ key: "", rows: visible }];
+    const m = new Map<string, Candidate[]>();
+    for (const c of visible) { const k = groupKey(c); if (!m.has(k)) m.set(k, []); m.get(k)!.push(c); }
+    return [...m.entries()].map(([key, rows]) => ({ key, rows })).sort((a, b) => b.rows.reduce((x, c) => x + c.size, 0) - a.rows.reduce((x, c) => x + c.size, 0));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, group, p.lang]);
   const visibleTotal = visible.reduce((a, c) => a + c.size, 0);
   const selectedVisible = visible.filter((c) => p.selected.has(c.id));
   const active = p.activeId ? p.candidates.find((c) => c.id === p.activeId) ?? null : null;
@@ -104,6 +123,16 @@ export function Candidates(p: Props) {
             </div>
           )}
         </div>
+        <div className="menu">
+          <button type="button" className={`tog ${group !== "none" ? "on" : ""}`} onClick={() => setGroupOpen(!groupOpen)}><Layers size={14} /> {s.groupBy}{group !== "none" && `: ${({ category: s.groupCategory, owner: s.groupOwner, project: s.groupProject, volume: s.groupVolume, none: "" })[group]}`} <ChevronDown size={13} /></button>
+          {groupOpen && (
+            <div className="menu-list" onMouseLeave={() => setGroupOpen(false)}>
+              {(["none", "category", "owner", "project", "volume"] as GroupKey[]).map((g) => (
+                <button type="button" key={g} className={group === g ? "active" : ""} onClick={() => { setGroup(g); setGroupOpen(false); }}>{({ none: s.groupNone, category: s.groupCategory, owner: s.groupOwner, project: s.groupProject, volume: s.groupVolume })[g]}</button>
+              ))}
+            </div>
+          )}
+        </div>
         <button type="button" className={`tog ${staleOnly ? "on" : ""}`} onClick={() => setStaleOnly(!staleOnly)}><Hourglass size={14} /> {s.staleOnly}</button>
         <button type="button" className={`tog ${showExcluded ? "on" : ""}`} onClick={() => setShowExcluded(!showExcluded)}><EyeOff size={14} /> {s.showExcluded}</button>
         <div className="right">
@@ -132,7 +161,10 @@ export function Candidates(p: Props) {
               <strong>{p.scanning ? s.scanning : !p.hasScanned ? s.emptyScan : p.candidates.length === 0 ? s.tidy : s.emptyFiltered}</strong>
             </div>
           )}
-          {visible.map((c) => {
+          {grouped.map(({ key, rows }) => (
+            <div key={key || "all"}>
+            {group !== "none" && <div className="group-h">{group === "volume" ? <Usb size={13} /> : <Layers size={13} />}{key}<span className="num">{rows.length} · {humanSize(rows.reduce((a, c) => a + c.size, 0))}</span></div>}
+            {rows.map((c) => {
             const isSel = p.selected.has(c.id);
             const isEx = p.excluded.has(c.id);
             const path = actionPath(c.action);
@@ -143,7 +175,7 @@ export function Candidates(p: Props) {
                 <span onClick={(e) => { e.stopPropagation(); if (!isEx) p.onToggle(c.id); }}><CheckBox checked={isSel} /></span>
                 <span className="cico" style={{ background: CATEGORY_VAR[c.category] }}><I size={15} /></span>
                 <div className="cell">
-                  <span className="n">{c.label} <Tags c={c} lang={p.lang} />{isEx && <span className="tag mute"><EyeOff size={10} />{s.excluded}</span>}</span>
+                  <span className="n">{c.label} <Tags c={c} lang={p.lang} />{c.blocked_by && <span className="blocked"><Lock size={9} />{c.blocked_by} · {s.blockedBy}</span>}{c.volume && c.volume !== "/" && <span className="tag mute"><Usb size={9} />{c.volume.split(/[\/]/).pop()}</span>}{isEx && <span className="tag mute"><EyeOff size={10} />{s.excluded}</span>}</span>
                   <span className="p" title={actionDisplay(c.action)}>{compactPath(actionDisplay(c.action), p.home)}</span>
                 </div>
                 <CategoryBadge category={c.category} lang={p.lang} />
@@ -158,6 +190,8 @@ export function Candidates(p: Props) {
               </div>
             );
           })}
+            </div>
+          ))}
           {visible.length > 0 && (
             <div className="tfoot">
               <ListFilter size={13} /><span><span className="num">{visible.length}</span> {s.items} · <span className="num">{humanSize(visibleTotal)}</span></span>
@@ -191,6 +225,9 @@ function Detail({ c, lang, home, excluded, onClose, onExclude, onReveal }: { c: 
           <dt><ListFilter size={12} />{s.colSize}</dt><dd className="size">{c.size ? humanSize(c.size) : "—"}{!c.size_exact && <span className="tag mute" style={{ marginLeft: 6 }}>≈ {s.estimate}</span>}</dd>
           {c.modified && <><dt><Calendar size={12} />{s.modified}</dt><dd>{formatDate(c.modified, lang)} · {ageLabel(ageDays(c.modified), lang)}</dd></>}
           {c.project && <><dt><FolderGit2 size={12} />{s.project}</dt><dd>{c.project.name} <span className="tag mute">{c.project.kind}</span><br /><code>{compactPath(c.project.root, home)}</code><br /><span style={{ color: "var(--ink-3)" }}>{s.idle} {c.project.idle_days} {s.days}</span></dd></>}
+          {c.owner && <><dt><Layers size={12} />{s.groupOwner}</dt><dd>{c.owner}</dd></>}
+          {c.volume && <><dt><Usb size={12} />{s.groupVolume}</dt><dd><code>{c.volume}</code></dd></>}
+          {c.blocked_by && <><dt><Lock size={12} />{s.blockedBy}</dt><dd className="blocked">{c.blocked_by}</dd></>}
           <dt><Fingerprint size={12} />ID</dt><dd><code style={{ userSelect: "text" }}>{c.id}</code></dd>
         </dl>
         <div className="acts2">

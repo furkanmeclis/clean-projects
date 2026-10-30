@@ -136,3 +136,55 @@ fn clean_refuses_without_yes_when_not_a_terminal() {
         .stderr(predicate::str::contains("--yes"));
     assert!(home.join("Projects/app/node_modules").exists());
 }
+
+#[test]
+fn recovery_bin_roundtrip_and_volumes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    fixture(&home);
+    let cfg = tmp.path().join("cfg");
+    let root = home.join("Projects");
+    let mut c = cmd(&cfg);
+    c.args([
+        "clean",
+        "--yes",
+        "--mode",
+        "recovery",
+        "--only-roots",
+        "--root",
+    ])
+    .arg(&root)
+    .args(["--no-tools", "--no-git", "--no-global"]);
+    c.assert().success();
+    assert!(!home.join("Projects/app/node_modules").exists());
+    cmd(&cfg)
+        .arg("recovery")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("node_modules"));
+    cmd(&cfg)
+        .arg("undo")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("restored"));
+    assert!(home.join("Projects/app/node_modules/pkg/big.bin").exists());
+    cmd(&cfg)
+        .arg("recovery")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("empty"));
+    cmd(&cfg).args(["volumes", "--json"]).assert().success();
+    cmd(&cfg)
+        .arg("explore")
+        .arg(&home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Projects/"));
+    let mut c = cmd(&cfg);
+    c.args(["scan", "--json-stream", "--only-roots", "--root"])
+        .arg(&root)
+        .args(["--no-tools", "--no-git", "--no-global"]);
+    c.assert()
+        .success()
+        .stdout(predicate::str::contains("\"category\":\"project\""));
+}

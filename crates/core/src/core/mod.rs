@@ -6,6 +6,8 @@ pub mod cleaner;
 pub mod disk;
 pub mod fsutil;
 pub mod i18n;
+pub mod process;
+pub mod recovery;
 pub mod state;
 
 pub use candidate::{Action, Candidate, Category, Risk};

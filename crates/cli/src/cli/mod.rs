@@ -66,8 +66,49 @@ pub enum Command {
     },
     /// Show or edit configuration.
     Config(ConfigCmd),
-    /// Check optional tools, scan roots and protected paths.
+    /// Check optional tools, scan roots, volumes and protected paths.
     Doctor,
+    /// Restore the items of the last cleanup (or `--run N`) from the recovery bin.
+    Undo {
+        /// 1 = last run, 2 = the one before, ...
+        #[arg(long, default_value_t = 1)]
+        run: usize,
+        /// Restore a single recovery id instead of a whole run.
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+    },
+    /// Show, purge or empty the recovery bin.
+    Recovery {
+        /// Delete entries older than the configured `clean.recovery_days`.
+        #[arg(long)]
+        purge: bool,
+        /// Delete everything in the recovery bin.
+        #[arg(long)]
+        empty: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List mounted volumes and how they are scanned.
+    Volumes {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Browse a directory by size (prints the largest entries).
+    Explore {
+        /// Directory to inspect (default: home).
+        path: Option<PathBuf>,
+        /// Number of entries to show.
+        #[arg(long, default_value_t = 30)]
+        top: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print or install the agent skill (Claude Code, Codex, Cursor) describing how to drive this CLI.
+    Skill {
+        /// Write the skill into ~/.claude/skills/cleanprojects/SKILL.md.
+        #[arg(long)]
+        install: bool,
+    },
     /// Generate shell completions.
     Completions {
         #[arg(value_enum)]
@@ -95,6 +136,12 @@ pub struct ScanArgs {
     /// Skip docker/pnpm/simctl probes.
     #[arg(long)]
     pub no_tools: bool,
+    /// Skip installers, superseded versions and volume trash.
+    #[arg(long)]
+    pub no_extras: bool,
+    /// Do not scan external volumes.
+    #[arg(long)]
+    pub no_volumes: bool,
     /// Minimum candidate size in MB.
     #[arg(long, value_name = "MB")]
     pub min_size: Option<u64>,
@@ -130,6 +177,13 @@ pub enum RiskArg {
     High,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum ModeArg {
+    Recovery,
+    Trash,
+    Permanent,
+}
+
 #[derive(Args, Debug, Clone)]
 pub struct ScanCmd {
     #[command(flatten)]
@@ -139,6 +193,9 @@ pub struct ScanCmd {
     /// Print JSON instead of a table.
     #[arg(long)]
     pub json: bool,
+    /// Print one JSON object per line as candidates are found.
+    #[arg(long, conflicts_with = "json")]
+    pub json_stream: bool,
     /// Write a Markdown report to this file.
     #[arg(long, value_name = "FILE")]
     pub report: Option<PathBuf>,
@@ -156,9 +213,15 @@ pub struct CleanCmd {
     /// Do not ask for confirmation.
     #[arg(short = 'y', long)]
     pub yes: bool,
-    /// Delete permanently instead of moving to trash.
+    /// Delete permanently instead of using the recovery bin or trash.
     #[arg(long)]
     pub permanent: bool,
+    /// Disposal mode: recovery (undoable), trash, permanent. Overrides the config.
+    #[arg(long, value_enum)]
+    pub mode: Option<ModeArg>,
+    /// Clean even when the owning application is running.
+    #[arg(long)]
+    pub force: bool,
     /// Print the result as JSON.
     #[arg(long)]
     pub json: bool,

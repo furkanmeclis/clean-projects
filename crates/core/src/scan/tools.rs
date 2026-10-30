@@ -214,13 +214,137 @@ fn conda() -> Vec<Candidate> {
     .with_size(0, false)]
 }
 
+/// Parse `docker images --format "{{.ID}}\t{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}"`.
+pub fn parse_images(text: &str) -> Vec<(String, String, u64, String)> {
+    text.lines()
+        .filter_map(|l| {
+            let p: Vec<&str> = l.split('\t').collect();
+            if p.len() < 5 {
+                return None;
+            }
+            let name = if p[1] == "<none>" {
+                format!("<untagged {}>", p[0])
+            } else {
+                format!("{}:{}", p[1], p[2])
+            };
+            Some((
+                p[0].to_string(),
+                name,
+                parse_human_size(p[3]).unwrap_or(0),
+                p[4].to_string(),
+            ))
+        })
+        .collect()
+}
+
+/// Images not referenced by any container, one candidate each.
+fn container_images(program: &str, label: &str) -> Vec<Candidate> {
+    let Some(images) = tool_output(
+        program,
+        &[
+            "images",
+            "--format",
+            "{{.ID}}\t{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}",
+        ],
+    ) else {
+        return Vec::new();
+    };
+    let used: std::collections::HashSet<String> =
+        tool_output(program, &["ps", "-a", "--format", "{{.Image}}"])
+            .map(|s| s.lines().map(|l| l.trim().to_string()).collect())
+            .unwrap_or_default();
+    parse_images(&images)
+        .into_iter()
+        .filter(|(id, name, size, _)| *size > 0 && !used.contains(name) && !used.iter().any(|u| id.starts_with(u) || u.starts_with(id)))
+        .map(|(id, name, size, age)| {
+            Candidate::new(
+                format!("{label} image {name}"),
+                format!("Image created {age}, not used by any container. Removed with `{program} rmi`; pull again when needed."),
+                Category::Container,
+                Risk::Medium,
+                Action::RunCommand { program: program.into(), args: vec!["rmi".into(), id], cwd: None },
+            )
+            .with_size(size, false)
+            .with_owner(label)
+            .with_tag("image")
+        })
+        .collect()
+}
+
+/// Parse `xcrun simctl list devices --json` into (name, runtime, udid, state, dataPath).
+pub fn parse_simctl_devices(json: &str) -> Vec<(String, String, String, String, String)> {
+    let v: serde_json::Value = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    if let Some(map) = v.get("devices").and_then(|d| d.as_object()) {
+        for (runtime, devices) in map {
+            let rt = runtime
+                .rsplit('.')
+                .next()
+                .unwrap_or(runtime)
+                .replace('-', " ");
+            if let Some(list) = devices.as_array() {
+                for d in list {
+                    let get = |k: &str| d.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    out.push((
+                        get("name"),
+                        rt.clone(),
+                        get("udid"),
+                        get("state"),
+                        get("dataPath"),
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn simulator_devices() -> Vec<Candidate> {
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    let Some(json) = tool_output("xcrun", &["simctl", "list", "devices", "--json"]) else {
+        return Vec::new();
+    };
+    parse_simctl_devices(&json)
+        .into_iter()
+        .filter(|(_, _, _, state, data)| state != "Booted" && !data.is_empty())
+        .filter_map(|(name, runtime, udid, _, data)| {
+            let path = std::path::PathBuf::from(&data);
+            let size = dir_size(&path);
+            if size < 64 * 1024 * 1024 {
+                return None;
+            }
+            Some(
+                Candidate::new(
+                    format!("Simulator device {name} ({runtime})"),
+                    "Deletes this simulator and its app data. Create a new one in Xcode when needed.",
+                    Category::Mobile,
+                    Risk::Medium,
+                    Action::RunCommand { program: "xcrun".into(), args: vec!["simctl".into(), "delete".into(), udid], cwd: None },
+                )
+                .with_size(size, true)
+                .with_modified(crate::core::fsutil::modified_at(&path))
+                .with_owner("Xcode")
+                .with_tag("simulator"),
+            )
+        })
+        .collect()
+}
+
 /// All tool-backed candidates available on this machine.
 pub fn tool_candidates() -> Vec<Candidate> {
     let mut out = Vec::new();
     out.extend(container_engine("docker", "Docker"));
+    out.extend(container_images("docker", "Docker"));
     out.extend(container_engine("podman", "Podman"));
+    out.extend(container_images("podman", "Podman"));
     out.extend(pnpm_store());
     out.extend(simulator_runtimes());
+    out.extend(simulator_devices());
     out.extend(conda());
     out
 }
@@ -243,6 +367,18 @@ mod tests {
         assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].0, "Images");
         assert_eq!(rows[3].1, (3.5 * 1024.0 * 1024.0 * 1024.0) as u64);
+    }
+
+    #[test]
+    fn parses_images_and_devices() {
+        let rows = parse_images("abc123\tnginx\t1.25\t187MB\t3 weeks ago\ndef456\t<none>\t<none>\t1.2GB\t2 months ago\n");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, "nginx:1.25");
+        assert_eq!(rows[1].1, "<untagged def456>");
+        let json = r#"{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-17-5":[{"name":"iPhone 15","udid":"U1","state":"Shutdown","dataPath":"/tmp/x"}]}}"#;
+        let d = parse_simctl_devices(json);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].1, "iOS 17 5");
     }
 
     #[test]

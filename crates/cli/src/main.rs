@@ -33,6 +33,13 @@ fn run(cli: Cli) -> Result<()> {
         Some(Command::History { json, limit }) => commands::cmd_history(&env, json, limit),
         Some(Command::Config(cmd)) => commands::cmd_config(&mut env, &cmd),
         Some(Command::Doctor) => commands::cmd_doctor(&env),
+        Some(Command::Undo { run, id }) => commands::cmd_undo(&mut env, run, id),
+        Some(Command::Recovery { purge, empty, json }) => {
+            commands::cmd_recovery(&env, purge, empty, json)
+        }
+        Some(Command::Volumes { json }) => commands::cmd_volumes(&env, json),
+        Some(Command::Explore { path, top, json }) => commands::cmd_explore(&env, path, top, json),
+        Some(Command::Skill { install }) => commands::cmd_skill(&env, install),
         Some(Command::Completions { .. }) => unreachable!(),
     }
 }

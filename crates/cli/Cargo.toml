@@ -13,6 +13,14 @@ homepage.workspace = true
 authors.workspace = true
 default-run = "cleanprojects"
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/cleanprojects-{ target }{ archive-suffix }"
+bin-dir = "cleanprojects-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [[bin]]
 name = "cleanprojects"
 path = "src/main.rs"

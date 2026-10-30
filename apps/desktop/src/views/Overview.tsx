@@ -1,5 +1,5 @@
-import { Boxes, Flame, FolderSearch, HardDrive, Hourglass, Layers, Lock, PieChart, Sparkles, Wand2, Wrench, Zap } from "lucide-react";
-import type { Bootstrap, Candidate, Category, DiskInfo } from "../types";
+import { Archive, Boxes, Flame, FolderSearch, HardDrive, Hourglass, Layers, Lock, PieChart, ShieldCheck, Sparkles, Usb, Wand2, Wifi, Wrench, Zap } from "lucide-react";
+import type { Bootstrap, Candidate, Category, DiskInfo, RecoverySummary, Volume } from "../types";
 import { CATEGORIES, actionDisplay } from "../types";
 import { compactPath, humanSize, pct } from "../format";
 import type { Lang } from "../i18n";
@@ -13,8 +13,12 @@ interface Props {
   candidates: Candidate[];
   excluded: Set<string>;
   selected: Set<string>;
+  volumes: Volume[];
+  recovery: RecoverySummary;
+  guarded: number;
   onPick: (c: Candidate) => void;
   onPreset: (ids: string[]) => void;
+  onExplore: (path: string) => void;
 }
 
 function Ring({ disk, recoverable, selected }: { disk: DiskInfo; recoverable: number; selected: number }) {
@@ -45,7 +49,7 @@ function Ring({ disk, recoverable, selected }: { disk: DiskInfo; recoverable: nu
   );
 }
 
-export function Overview({ lang, boot, disk, candidates, excluded, selected, onPick, onPreset }: Props) {
+export function Overview({ lang, boot, disk, candidates, excluded, selected, volumes, recovery, guarded, onPick, onPreset, onExplore }: Props) {
   const s = STRINGS[lang];
   const tip = useTooltip();
   const active = candidates.filter((c) => !excluded.has(c.id));
@@ -88,7 +92,7 @@ export function Overview({ lang, boot, disk, candidates, excluded, selected, onP
           <section className="panel tile ember"><span className="k"><Flame size={13} />{s.recoverable}</span><span className="v">{humanSize(recoverable)}</span><span className="h">{pct(recoverable, disk.total).toFixed(1)}% {s.of} {humanSize(disk.total)}</span></section>
           <section className="panel tile"><span className="k"><Sparkles size={13} />{s.low}</span><span className="v">{humanSize(low.reduce((a, c) => a + c.size, 0))}</span><span className="h">{low.length} {s.items}</span></section>
           <section className="panel tile"><span className="k"><Hourglass size={13} />{s.stale}</span><span className="v">{staleProjects}</span><span className="h">{humanSize(staleSize)} · ≥ {boot.config.scan.stale_days} {s.days}</span></section>
-          <section className="panel tile"><span className="k"><PieChart size={13} />{s.candidates}</span><span className="v">{active.length}</span><span className="h">{byCat.length} {lang === "tr" ? "kategori" : "categories"}</span></section>
+          <section className="panel tile"><span className="k"><Archive size={13} />{s.recoveryBin}</span><span className="v">{humanSize(recovery.bytes)}</span><span className="h">{recovery.items} {s.items}{guarded > 0 && <> · <ShieldCheck size={11} style={{ verticalAlign: -1 }} /> {guarded} {s.guarded}</>}</span></section>
         </div>
           <Panel icon={<Wand2 size={14} />} title={lang === "tr" ? "Hızlı seçimler" : "Quick selections"} className="presets-panel" sub={<span>{lang === "tr" ? "seçime ekler" : "adds to selection"}</span>}>
             <div className="presets">
@@ -144,14 +148,27 @@ export function Overview({ lang, boot, disk, candidates, excluded, selected, onP
       </div>
 
       <div className="ov-low">
+        <Panel icon={<HardDrive size={14} />} title={s.volumes} sub={<span>{volumes.filter((v) => v.kind === "external").length} {s.external}</span>}>
+          <div className="vol-list">
+            {volumes.map((v) => {
+              const scanned = v.kind === "external" ? boot.config.scan.volumes && !v.read_only && !boot.config.scan.skip_volumes.includes(v.mount) : true;
+              return (
+                <div className="vol" key={v.mount} style={{ cursor: "pointer" }} onClick={() => onExplore(v.mount)} title={v.mount}>
+                  <span className="vi">{v.kind === "external" ? <Usb size={15} /> : v.kind === "network" ? <Wifi size={15} /> : <HardDrive size={15} />}</span>
+                  <span style={{ minWidth: 0 }}><span className="vn">{v.name} <span className={`tag ${scanned ? "" : "mute"}`}>{scanned ? s.volumeScanned : s.volumeSkipped}</span>{v.read_only && <span className="tag mute">{s.readOnly}</span>}</span><span className="vm">{v.mount} · {v.file_system}</span></span>
+                  <span className="vs">{humanSize(v.free)} {lang === "tr" ? "boş" : "free"}<br /><span style={{ color: "var(--ink-3)" }}>{humanSize(v.total)}</span></span>
+                  <div className="meter"><i style={{ width: `${pct(v.used, v.total)}%`, background: pct(v.used, v.total) > 90 ? "var(--bad)" : undefined }} /></div>
+                </div>
+              );
+            })}
+          </div>
+        </Panel>
         <Panel icon={<Lock size={14} />} title={s.protectedTitle} sub={s.protectedHint}>
           <div className="chips">{boot.protected.map((p) => <span className="chip" key={p}><Lock size={11} />{p}</span>)}</div>
         </Panel>
-        <Panel icon={<FolderSearch size={14} />} title={s.roots}>
+        <Panel icon={<FolderSearch size={14} />} title={`${s.roots} · ${s.tools}`}>
           <div className="chips">{boot.roots.map((p) => <span className="chip" key={p}><FolderSearch size={11} />{p}</span>)}{boot.roots.length === 0 && <span className="chip off">—</span>}</div>
-        </Panel>
-        <Panel icon={<Wrench size={14} />} title={s.tools}>
-          <div className="chips">{boot.tools.map(([t, ok]) => <span className={`chip ${ok ? "on" : "off"}`} key={t}>{ok ? "●" : "○"} {t}</span>)}</div>
+          <div className="chips" style={{ marginTop: 10 }}>{boot.tools.map(([t, ok]) => <span className={`chip ${ok ? "on" : "off"}`} key={t}><Wrench size={11} />{t}</span>)}</div>
         </Panel>
       </div>
       {tip.el}

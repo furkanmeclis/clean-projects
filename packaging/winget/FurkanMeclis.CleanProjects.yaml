@@ -1,0 +1,16 @@
+# winget manifest (singleton form). Submit to microsoft/winget-pkgs under
+# manifests/f/FurkanMeclis/CleanProjects/<version>/ after a release.
+PackageIdentifier: FurkanMeclis.CleanProjects
+PackageVersion: 2.1.0
+PackageName: CleanProjects
+Publisher: Furkan Meclis
+License: MIT
+ShortDescription: Developer disk cleanup with a recovery bin, git maintenance and a treemap explorer.
+PackageUrl: https://github.com/furkanmeclis/clean-projects
+Installers:
+  - Architecture: x64
+    InstallerType: wix
+    InstallerUrl: https://github.com/furkanmeclis/clean-projects/releases/download/v2.1.0/CleanProjects_2.1.0_x64_en-US.msi
+    InstallerSha256: REPLACE_WITH_SHA256
+ManifestType: singleton
+ManifestVersion: 1.6.0

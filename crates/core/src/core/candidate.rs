@@ -133,6 +133,13 @@ pub enum ProjectKind {
     Elixir,
     Cmake,
     Unity,
+    Godot,
+    Unreal,
+    Zig,
+    Haskell,
+    Terraform,
+    Jupyter,
+    Pixi,
     Generic,
 }
 
@@ -153,6 +160,13 @@ impl ProjectKind {
             ProjectKind::Elixir => "elixir",
             ProjectKind::Cmake => "cmake",
             ProjectKind::Unity => "unity",
+            ProjectKind::Godot => "godot",
+            ProjectKind::Unreal => "unreal",
+            ProjectKind::Zig => "zig",
+            ProjectKind::Haskell => "haskell",
+            ProjectKind::Terraform => "terraform",
+            ProjectKind::Jupyter => "jupyter",
+            ProjectKind::Pixi => "pixi",
             ProjectKind::Generic => "generic",
         }
     }
@@ -248,7 +262,19 @@ pub struct Candidate {
     pub size: u64,
     /// `false` when `size` is an estimate (docker, git gc).
     pub size_exact: bool,
+    /// Sum of file lengths (may exceed `size` when files are sparse or hardlinked).
+    #[serde(default)]
+    pub apparent_size: u64,
     pub modified: Option<DateTime<Local>>,
+    /// The tool or application that produced this data ("Xcode", "Docker", a project name).
+    #[serde(default)]
+    pub owner: String,
+    /// Name of a running application that must be closed before cleaning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_by: Option<String>,
+    /// Mount point of the volume holding the item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<String>,
     pub action: Action,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<ProjectInfo>,
@@ -273,7 +299,11 @@ impl Candidate {
             risk,
             size: 0,
             size_exact: true,
+            apparent_size: 0,
             modified: None,
+            owner: String::new(),
+            blocked_by: None,
+            volume: None,
             action,
             project: None,
             tags: Vec::new(),
@@ -282,8 +312,40 @@ impl Candidate {
 
     pub fn with_size(mut self, size: u64, exact: bool) -> Self {
         self.size = size;
+        if self.apparent_size == 0 {
+            self.apparent_size = size;
+        }
         self.size_exact = exact;
         self
+    }
+
+    pub fn with_measure(mut self, m: crate::core::fsutil::Measure) -> Self {
+        self.size = m.allocated;
+        self.apparent_size = m.apparent;
+        self.size_exact = true;
+        self
+    }
+
+    pub fn with_owner(mut self, owner: impl Into<String>) -> Self {
+        self.owner = owner.into();
+        self
+    }
+
+    pub fn with_blocked_by(mut self, app: Option<String>) -> Self {
+        self.blocked_by = app;
+        self
+    }
+
+    /// Fill `owner` from the label when nothing better is known ("Xcode DerivedData" → "Xcode").
+    pub fn owner_or_label(&self) -> String {
+        if !self.owner.is_empty() {
+            return self.owner.clone();
+        }
+        self.label
+            .split([' ', '·'])
+            .next()
+            .unwrap_or("")
+            .to_string()
     }
 
     pub fn with_modified(mut self, modified: Option<DateTime<Local>>) -> Self {

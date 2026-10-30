@@ -13,9 +13,11 @@ use cleanprojects_core::fsutil::{compact_path, ellipsize_end, ellipsize_middle, 
 use cleanprojects_core::{Candidate, Category, Risk};
 
 use super::theme;
-use super::{App, Modal, Sort, Tab, ViewFilter};
+use super::{mode_label, App, Modal, Sort, Tab, ViewFilter};
+use cleanprojects_core::cleaner::CleanMode;
+use cleanprojects_core::VolumeKind;
 
-pub const SETTINGS_ROWS: usize = 9;
+pub const SETTINGS_ROWS: usize = 12;
 const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -32,6 +34,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     match app.tab {
         Tab::Overview => draw_overview(f, app, body),
         Tab::Candidates | Tab::Git => draw_table(f, app, body),
+        Tab::Explore => draw_explore(f, app, body),
         Tab::History => draw_history(f, app, body),
         Tab::Settings => draw_settings(f, app, body),
     }
@@ -102,10 +105,17 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             ),
             Span::styled(
                 format!(
-                    "{} {}  {p} projects  {r} repos  {:.1}s",
+                    "{} {}  {p} projects  {r} repos  {} {}  {:.1}s{}",
                     app.candidates.len(),
                     s.candidates.to_lowercase(),
-                    ms as f64 / 1000.0
+                    app.guarded,
+                    s.guarded,
+                    ms as f64 / 1000.0,
+                    if app.cached {
+                        format!("  ({})", s.cached)
+                    } else {
+                        String::new()
+                    }
                 ),
                 theme::muted(),
             ),
@@ -155,8 +165,9 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         format!(" 1 {} ", s.tab_overview),
         format!(" 2 {} ({n}) ", s.tab_candidates),
         format!(" 3 {} ({git_n}) ", s.tab_git),
-        format!(" 4 {} ({}) ", s.tab_history, app.env.state.history.len()),
-        format!(" 5 {} ", s.tab_settings),
+        format!(" 4 {} ", s.tab_explore),
+        format!(" 5 {} ({}) ", s.tab_history, app.env.state.history.len()),
+        format!(" 6 {} ", s.tab_settings),
     ];
     let tabs = Tabs::new(titles)
         .select(Tab::ALL.iter().position(|t| *t == app.tab).unwrap_or(0))
@@ -269,13 +280,42 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
             .wrap(Wrap { trim: true }),
         prot,
     );
-    let root_lines: Vec<Line> = ctx
-        .roots
-        .iter()
-        .map(|p| Line::from(compact_path(p, &app.env.paths.home)))
-        .collect();
+    let mut root_lines: Vec<Line> = Vec::new();
+    for v in &app.volumes {
+        let w = roots.width.saturating_sub(4) as usize;
+        let bar_w = w.saturating_sub(22).clamp(4, 24);
+        let filled = ((v.used_percent() / 100.0) * bar_w as f64).round() as usize;
+        let kind = match v.kind {
+            VolumeKind::System => "⌂",
+            VolumeKind::External => "▣",
+            VolumeKind::Network => "☁",
+        };
+        root_lines.push(Line::from(vec![
+            Span::styled(
+                format!("{kind} {:<10}", ellipsize_end(&v.name, 10)),
+                theme::bold(),
+            ),
+            Span::styled(
+                "█".repeat(filled),
+                Style::default().fg(if v.used_percent() > 90.0 {
+                    theme::BAD
+                } else {
+                    theme::ACCENT
+                }),
+            ),
+            Span::styled("░".repeat(bar_w.saturating_sub(filled)), theme::muted()),
+            Span::styled(format!(" {} free", human_size(v.free)), theme::muted()),
+        ]));
+    }
+    root_lines.push(Line::from(""));
+    for p in &ctx.roots {
+        root_lines.push(Line::from(Span::styled(
+            compact_path(p, &app.env.paths.home),
+            theme::muted(),
+        )));
+    }
     f.render_widget(
-        Paragraph::new(root_lines).block(block(s.setting_roots)),
+        Paragraph::new(root_lines).block(block(format!("{} · {}", s.volumes, s.setting_roots))),
         roots,
     );
     let stale = active.iter().filter(|c| c.is_stale()).count();
@@ -287,6 +327,13 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled(format!("{} ", s.excluded), theme::muted()),
             Span::styled(excluded.len().to_string(), theme::bold()),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{} ", s.recovery_bin), theme::muted()),
+            Span::styled(
+                human_size(app.env.paths.load_journal().total_size()),
+                theme::bold(),
+            ),
         ]),
         Line::from(""),
         Line::from(Span::styled(s.keys_global, theme::muted())),
@@ -373,11 +420,10 @@ fn draw_table(f: &mut Frame, app: &App, area: Rect) {
     spans.push(Span::raw("  "));
     spans.push(Span::styled("t ", theme::accent()));
     spans.push(Span::styled(
-        if app.use_trash { "trash" } else { "permanent" },
-        if app.use_trash {
-            Style::default().fg(theme::GOOD)
-        } else {
-            Style::default().fg(theme::BAD)
+        app.mode.as_str(),
+        match app.mode {
+            CleanMode::Permanent => Style::default().fg(theme::BAD),
+            _ => Style::default().fg(theme::GOOD),
         },
     ));
     f.render_widget(Paragraph::new(Line::from(spans)), toolbar);
@@ -408,6 +454,9 @@ fn draw_table(f: &mut Frame, app: &App, area: Rect) {
             let mut label = c.label.clone();
             if c.is_stale() {
                 label.push_str(" ⏳");
+            }
+            if let Some(app_name) = &c.blocked_by {
+                label.push_str(&format!(" ⛔{app_name}"));
             }
             let name_style = if ex {
                 theme::muted()
@@ -609,8 +658,13 @@ fn draw_history(f: &mut Frame, app: &App, area: Rect) {
         .map(|h| {
             let ok = h.items.iter().filter(|i| i.ok).count();
             let failed = h.items.len() - ok;
+            let restorable = h.restorable();
             Row::new(vec![
-                Line::from(h.at.format("%Y-%m-%d %H:%M").to_string()),
+                Line::from(format!(
+                    "{}{}",
+                    h.at.format("%Y-%m-%d %H:%M"),
+                    if restorable > 0 { " ↺" } else { "" }
+                )),
                 Line::from(Span::styled(human_size(h.freed), theme::accent_bold()))
                     .alignment(Alignment::Right),
                 Line::from(Span::styled(
@@ -677,7 +731,17 @@ fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
         }
     };
     let rows: Vec<(String, Span)> = vec![
-        (s.setting_trash.into(), onoff(cfg.clean.use_trash)),
+        (
+            s.setting_trash.into(),
+            Span::styled(
+                cfg.clean.mode.clone(),
+                if cfg.clean.mode == "permanent" {
+                    Style::default().fg(theme::BAD)
+                } else {
+                    Style::default().fg(theme::GOOD)
+                },
+            ),
+        ),
         (s.setting_git.into(), onoff(cfg.git.enabled)),
         (s.setting_branches.into(), onoff(cfg.git.merged_branches)),
         (s.setting_gc.into(), onoff(cfg.git.gc)),
@@ -698,6 +762,12 @@ fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(cfg.scan.max_depth.to_string(), theme::bold()),
         ),
         ("Default roots".into(), onoff(cfg.scan.default_roots)),
+        (s.setting_volumes.into(), onoff(cfg.scan.volumes)),
+        (s.setting_block.into(), onoff(cfg.clean.block_running_apps)),
+        (
+            s.setting_recovery_days.into(),
+            Span::styled(cfg.clean.recovery_days.to_string(), theme::bold()),
+        ),
     ];
     let items: Vec<ListItem> = rows
         .into_iter()
@@ -746,6 +816,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let keys = match app.tab {
         Tab::Candidates | Tab::Git => s.keys_table,
         Tab::Settings => s.setting_hint,
+        Tab::Explore => s.explore_keys,
+        Tab::History => s.undo,
         _ => s.keys_global,
     };
     let line1 = if let Some((msg, _)) = &app.toast {
@@ -755,8 +827,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     };
     let line2 = Line::from(Span::styled(
         format!(
-            " {}   E export   L language   {}",
-            s.keys_global, s.quit_hint
+            " Tab / 1-6 view   r rescan   ? help   E export   L language   {}",
+            s.quit_hint
         ),
         theme::muted(),
     ));
@@ -804,10 +876,14 @@ fn draw_confirm(f: &mut Frame, app: &App, area: Rect) {
             format!("[d] {}", s.dry_run),
             Style::default().fg(theme::WARN),
         )
-    } else if app.use_trash {
-        Span::styled(s.confirm_trash, Style::default().fg(theme::GOOD))
     } else {
-        Span::styled(s.confirm_permanent, Style::default().fg(theme::BAD))
+        Span::styled(
+            mode_label(app.mode, s),
+            match app.mode {
+                CleanMode::Permanent => Style::default().fg(theme::BAD),
+                _ => Style::default().fg(theme::GOOD),
+            },
+        )
     };
     lines.push(Line::from(mode));
     lines.push(Line::from(""));
@@ -943,4 +1019,85 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     f.render_widget(Paragraph::new(lines).block(block(s.help_title)), rect);
+}
+
+fn draw_explore(f: &mut Frame, app: &App, area: Rect) {
+    let s = app.s();
+    let total: u64 = app.explore_nodes.iter().map(|n| n.size).sum();
+    let title = format!(
+        "{} · {} · {}{}",
+        s.tab_explore,
+        compact_path(&app.explore_dir, &app.env.paths.home),
+        human_size(total),
+        if app.explore_loading { "  …" } else { "" }
+    );
+    let max = app
+        .explore_nodes
+        .first()
+        .map(|n| n.size)
+        .unwrap_or(1)
+        .max(1);
+    let bar_w = area.width.saturating_sub(4 + 10 + 2 + 40).clamp(8, 30) as usize;
+    let name_w = area.width.saturating_sub(4 + 10 + 2 + bar_w as u16 + 2) as usize;
+    let rows: Vec<Row> = app
+        .explore_nodes
+        .iter()
+        .map(|n| {
+            let filled = ((n.size as f64 / max as f64) * bar_w as f64).round() as usize;
+            let name = if n.is_dir {
+                format!("{}/", n.name)
+            } else {
+                n.name.clone()
+            };
+            Row::new(vec![
+                Line::from(Span::styled(
+                    format!("{:>9}", human_size(n.size)),
+                    theme::bold(),
+                ))
+                .alignment(Alignment::Right),
+                Line::from(vec![
+                    Span::styled("█".repeat(filled), theme::accent()),
+                    Span::styled("░".repeat(bar_w.saturating_sub(filled)), theme::muted()),
+                ]),
+                Line::from(Span::styled(
+                    ellipsize_end(&name, name_w),
+                    if n.is_dir {
+                        theme::bold()
+                    } else {
+                        Style::default()
+                    },
+                )),
+            ])
+        })
+        .collect();
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(10),
+            Constraint::Length(bar_w as u16),
+            Constraint::Min(10),
+        ],
+    )
+    .block(block(title))
+    .row_highlight_style(theme::cursor())
+    .column_spacing(1);
+    let mut state = TableState::default();
+    if !app.explore_nodes.is_empty() {
+        state.select(Some(app.explore_cursor.min(app.explore_nodes.len() - 1)));
+    }
+    f.render_stateful_widget(table, area, &mut state);
+    if app.explore_nodes.is_empty() {
+        let p = Paragraph::new(Span::styled(
+            if app.explore_loading { "…" } else { "empty" },
+            theme::muted(),
+        ))
+        .alignment(Alignment::Center);
+        let inner = Rect {
+            x: area.x + 2,
+            y: area.y + area.height / 2,
+            width: area.width.saturating_sub(4),
+            height: 1,
+        };
+        f.render_widget(p, inner);
+    }
 }

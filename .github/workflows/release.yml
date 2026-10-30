@@ -134,10 +134,27 @@ jobs:
           security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
           rm certificate.p12
+      - name: Decide updater artifacts
+        # Updater bundles are signed with TAURI_SIGNING_PRIVATE_KEY. Without the secret
+        # the app is still built, just without `latest.json` / signatures.
+        id: updater
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "args=" >> "$GITHUB_OUTPUT"
+            echo "json=true" >> "$GITHUB_OUTPUT"
+          else
+            echo 'args=--config {"bundle":{"createUpdaterArtifacts":false}}' >> "$GITHUB_OUTPUT"
+            echo "json=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Build and upload bundles
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # macOS code signing + notarization (optional; all five must be set)
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -150,7 +167,8 @@ jobs:
           releaseBody: "See the assets below. Desktop installers: `.dmg` (macOS), `.AppImage` / `.deb` / `.rpm` (Linux), `.msi` / `-setup.exe` (Windows). Terminal binaries: `cleanprojects-<target>.tar.gz|zip`."
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
-          args: ${{ matrix.args }}
+          includeUpdaterJson: ${{ steps.updater.outputs.json == 'true' }}
+          args: ${{ matrix.args }} ${{ steps.updater.outputs.args }}
 
   publish-cli:
     name: Attach CLI binaries

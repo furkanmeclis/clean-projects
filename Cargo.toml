@@ -4,7 +4,7 @@ members = ["crates/core", "crates/cli", "apps/desktop/src-tauri"]
 default-members = ["crates/core", "crates/cli"]
 
 [workspace.package]
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
@@ -13,7 +13,7 @@ homepage = "https://github.com/furkanmeclis/clean-projects"
 authors = ["Furkan Meclis"]
 
 [workspace.dependencies]
-cleanprojects-core = { path = "crates/core", version = "2.0.0" }
+cleanprojects-core = { path = "crates/core", version = "2.1.0" }
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }

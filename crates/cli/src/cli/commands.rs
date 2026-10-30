@@ -15,12 +15,14 @@ use anyhow::{Context, Result};
 use chrono::Local;
 use clap::CommandFactory;
 
-use crate::cli::{CleanCmd, Cli, ConfigCmd, FilterArgs, RiskArg, ScanArgs, ScanCmd};
-use cleanprojects_core::core::cleaner::{self, CleanEvent, CleanOptions};
+use crate::cli::{CleanCmd, Cli, ConfigCmd, FilterArgs, ModeArg, RiskArg, ScanArgs, ScanCmd};
+use cleanprojects_core::core::cleaner::{self, CleanEvent, CleanMode, CleanOptions};
 use cleanprojects_core::core::fsutil::{compact_path, ellipsize_middle, human_size};
+use cleanprojects_core::core::recovery;
 use cleanprojects_core::core::state::{Config, Paths, State};
 use cleanprojects_core::core::{Candidate, Category, Risk};
 use cleanprojects_core::scan::{self, ScanContext, ScanEvent, ScanResult};
+use cleanprojects_core::{Volume, VolumeKind};
 
 pub struct Env {
     pub paths: Paths,
@@ -90,6 +92,9 @@ pub fn build_context(env: &Env, args: &ScanArgs) -> ScanContext {
     for r in &args.roots {
         config.scan.roots.push(r.display().to_string());
     }
+    if args.no_volumes || args.only_roots {
+        config.scan.volumes = false;
+    }
     let mut ctx = ScanContext::new(env.paths.home.clone(), config);
     if args.no_git {
         ctx.include_git = false;
@@ -97,11 +102,49 @@ pub fn build_context(env: &Env, args: &ScanArgs) -> ScanContext {
     ctx.include_global = !args.no_global;
     ctx.include_projects = !args.no_projects;
     ctx.include_tools = !args.no_tools;
+    ctx.include_extras = !args.no_extras && !args.only_roots;
     ctx
+}
+
+/// The configured disposal mode, with CLI overrides.
+pub fn clean_mode(env: &Env, permanent: bool, mode: Option<ModeArg>) -> CleanMode {
+    if permanent {
+        return CleanMode::Permanent;
+    }
+    match mode {
+        Some(ModeArg::Recovery) => CleanMode::Recovery,
+        Some(ModeArg::Trash) => CleanMode::Trash,
+        Some(ModeArg::Permanent) => CleanMode::Permanent,
+        None => CleanMode::parse(&env.config.clean.mode),
+    }
+}
+
+/// Build cleaner options from the environment.
+pub fn clean_options(
+    env: &Env,
+    ctx: &ScanContext,
+    dry_run: bool,
+    mode: CleanMode,
+    force: bool,
+) -> CleanOptions {
+    CleanOptions {
+        dry_run,
+        mode,
+        home: env.paths.home.clone(),
+        protected: ctx.protected.clone(),
+        data_dir: env.paths.data_dir.clone(),
+        volumes: ctx.volumes.clone(),
+        block_running_apps: env.config.clean.block_running_apps && !force,
+    }
 }
 
 /// Run a scan with a live progress line on stderr.
 pub fn run_scan(env: &Env, ctx: &ScanContext, quiet: bool) -> ScanResult {
+    run_scan_with(env, ctx, quiet, false)
+}
+
+/// Run a scan; with `stream` every candidate is printed as JSON when found.
+pub fn run_scan_with(env: &Env, ctx: &ScanContext, quiet: bool, stream: bool) -> ScanResult {
     let (tx, rx) = std::sync::mpsc::channel();
     let ctx2 = ctx.clone();
     let handle = std::thread::spawn(move || scan::scan(&ctx2, tx));
@@ -123,6 +166,11 @@ pub fn run_scan(env: &Env, ctx: &ScanContext, quiet: bool) -> ScanResult {
             ScanEvent::Found(c) => {
                 found += 1;
                 total += c.size;
+                if stream {
+                    if let Ok(line) = serde_json::to_string(&*c) {
+                        out!("{line}");
+                    }
+                }
                 if show {
                     eprint!(
                         "\r\x1b[2K{} {found} candidates · {}",
@@ -137,7 +185,9 @@ pub fn run_scan(env: &Env, ctx: &ScanContext, quiet: bool) -> ScanResult {
     if show {
         eprint!("\r\x1b[2K");
     }
-    handle.join().expect("scan thread panicked")
+    let result = handle.join().expect("scan thread panicked");
+    let _ = cleanprojects_core::save_cache(&env.paths.scan_cache_file, &result);
+    result
 }
 
 fn max_risk(r: RiskArg) -> Risk {
@@ -226,6 +276,9 @@ pub fn print_table(env: &Env, items: &[&Candidate]) {
         if env.state.excluded.contains(&c.id) {
             label.push_str(" (excluded)");
         }
+        if let Some(app) = &c.blocked_by {
+            label.push_str(&format!(" ⛔{app}"));
+        }
         out!(
             "{}  {:<14}  {}  {:>9}  {:<30}  {}",
             env.dim(&c.id),
@@ -249,8 +302,11 @@ fn terminal_width() -> usize {
 
 pub fn cmd_scan(env: &Env, cmd: &ScanCmd) -> Result<()> {
     let ctx = build_context(env, &cmd.scan);
-    let result = run_scan(env, &ctx, cmd.json);
+    let result = run_scan_with(env, &ctx, cmd.json || cmd.json_stream, cmd.json_stream);
     let items = apply_filter(env, &result, &cmd.filter)?;
+    if cmd.json_stream {
+        return Ok(());
+    }
     if cmd.json {
         let out = serde_json::json!({
             "scanned_at": result.started_at,
@@ -259,6 +315,8 @@ pub fn cmd_scan(env: &Env, cmd: &ScanCmd) -> Result<()> {
             "roots": result.roots,
             "projects": result.projects,
             "repos": result.repos,
+            "guarded": result.guarded,
+            "volumes": result.volumes,
             "total_bytes": items.iter().map(|c| c.size).sum::<u64>(),
             "candidates": items,
         });
@@ -268,13 +326,15 @@ pub fn cmd_scan(env: &Env, cmd: &ScanCmd) -> Result<()> {
         let total: u64 = items.iter().map(|c| c.size).sum();
         out!();
         out!(
-            "{} candidates · {} recoverable · disk {} free of {} · {} projects, {} repos · {:.1}s",
+            "{} candidates · {} recoverable · disk {} free of {} · {} projects, {} repos, {} guarded · {} volumes · {:.1}s",
             env.bold(&items.len().to_string()),
             env.orange(&human_size(total)),
             human_size(result.disk.free),
             human_size(result.disk.total),
             result.projects,
             result.repos,
+            result.guarded,
+            result.volumes.len(),
             result.duration_ms as f64 / 1000.0
         );
         if items.len() < result.candidates.len() {
@@ -338,17 +398,19 @@ pub fn cmd_clean(env: &mut Env, cmd: &CleanCmd) -> Result<()> {
         return Ok(());
     }
     let total: u64 = items.iter().map(|c| c.size).sum();
-    let use_trash = env.config.clean.use_trash && !cmd.permanent;
+    let mode = clean_mode(env, cmd.permanent, cmd.mode);
     if !cmd.json {
         let refs: Vec<&Candidate> = items.iter().collect();
         print_table(env, &refs);
         out!();
         let mode = if cmd.dry_run {
             env.dim("dry run")
-        } else if use_trash {
-            env.green("move to trash")
         } else {
-            env.red("PERMANENT delete")
+            match mode {
+                CleanMode::Recovery => env.green("recovery bin (undo with `cleanprojects undo`)"),
+                CleanMode::Trash => env.green("move to trash"),
+                CleanMode::Permanent => env.red("PERMANENT delete"),
+            }
         };
         out!(
             "{} items · {} · mode: {}",
@@ -376,15 +438,10 @@ pub fn cmd_clean(env: &mut Env, cmd: &CleanCmd) -> Result<()> {
             return Ok(());
         }
     }
-    let opts = CleanOptions {
-        dry_run: cmd.dry_run,
-        use_trash,
-        home: env.paths.home.clone(),
-        protected: ctx.protected.clone(),
-    };
+    let opts = clean_options(env, &ctx, cmd.dry_run, mode, cmd.force);
     let json = cmd.json;
     let env_ref = &*env;
-    let entry = cleaner::run(&items, &opts, |ev| {
+    let outcome = cleaner::run_with_journal(&items, &opts, &mut |ev| {
         if json {
             return;
         }
@@ -419,10 +476,16 @@ pub fn cmd_clean(env: &mut Env, cmd: &CleanCmd) -> Result<()> {
             }
         }
     });
+    let entry = outcome.entry;
+    if !outcome.recovered.is_empty() {
+        let mut journal = env.paths.load_journal();
+        cleaner::record_recovered(&mut journal, outcome.recovered);
+        env.paths.save_journal(&journal)?;
+    }
     env.paths.append_log(&format!(
-        "clean dry_run={} trash={} freed={} ok={} failed={}",
+        "clean dry_run={} mode={} freed={} ok={} failed={}",
         entry.dry_run,
-        entry.trashed,
+        entry.mode,
         entry.freed,
         entry.items.iter().filter(|i| i.ok).count(),
         entry.items.iter().filter(|i| !i.ok).count()
@@ -605,14 +668,18 @@ pub fn cmd_doctor(env: &Env) -> Result<()> {
         .filter(|p| p.exists())
         .count();
     out!("  {present} of {n} locations exist on this machine");
-    let disk = cleanprojects_core::core::disk::disk_for(&env.paths.home);
-    out!("\n{}", env.bold("disk"));
+    out!("\n{}", env.bold("volumes"));
+    for v in &ctx.volumes {
+        out!("  {}", volume_line(env, v));
+    }
+    let journal = env.paths.load_journal();
+    out!("\n{}", env.bold("recovery bin"));
     out!(
-        "  {} · {} free of {} ({:.0}% used)",
-        disk.mount,
-        human_size(disk.free),
-        human_size(disk.total),
-        disk.used_percent()
+        "  {} items · {} · purge after {} days · {}",
+        journal.entries.len(),
+        human_size(journal.total_size()),
+        env.config.clean.recovery_days,
+        env.paths.data_dir.join("recovery").display()
     );
     out!(
         "\n{}",
@@ -627,4 +694,203 @@ pub fn cmd_doctor(env: &Env) -> Result<()> {
 pub fn cmd_completions(shell: clap_complete::Shell) {
     let mut cmd = Cli::command();
     clap_complete::generate(shell, &mut cmd, "cleanprojects", &mut io::stdout());
+}
+
+fn volume_line(env: &Env, v: &Volume) -> String {
+    let kind = match v.kind {
+        VolumeKind::System => env.dim("system  "),
+        VolumeKind::External => env.orange("external"),
+        VolumeKind::Network => env.yellow("network "),
+    };
+    format!(
+        "{kind}  {:<24} {:>9} free of {:>9} ({:.0}% used)  {}{}",
+        ellipsize_middle(&v.name, 24),
+        human_size(v.free),
+        human_size(v.total),
+        v.used_percent(),
+        env.dim(&v.mount.display().to_string()),
+        if v.read_only {
+            env.dim("  read-only")
+        } else {
+            String::new()
+        }
+    )
+}
+
+pub fn cmd_volumes(env: &Env, json: bool) -> Result<()> {
+    let vols = cleanprojects_core::volumes(&env.paths.home);
+    if json {
+        out!("{}", serde_json::to_string_pretty(&vols)?);
+        return Ok(());
+    }
+    if vols.is_empty() {
+        out!("No volumes reported by the operating system.");
+    }
+    for v in &vols {
+        out!("{}", volume_line(env, v));
+    }
+    let scanned = if env.config.scan.volumes {
+        "external volumes are scanned for projects"
+    } else {
+        "external volumes are not scanned (scan.volumes = false)"
+    };
+    out!("\n{}", env.dim(scanned));
+    Ok(())
+}
+
+pub fn cmd_undo(env: &mut Env, run: usize, id: Option<String>) -> Result<()> {
+    let mut journal = env.paths.load_journal();
+    if let Some(id) = id {
+        let Some(pos) = journal.entries.iter().position(|e| e.id == id) else {
+            anyhow::bail!("{id} is not in the recovery bin");
+        };
+        recovery::restore(&journal.entries[pos])?;
+        let e = journal.entries.remove(pos);
+        env.paths.save_journal(&journal)?;
+        out!("{} restored to {}", env.green("✓"), e.original.display());
+        return Ok(());
+    }
+    let n = env.state.history.len();
+    if run == 0 || run > n {
+        anyhow::bail!("no such run; {n} runs in history");
+    }
+    let entry = env.state.history[n - run].clone();
+    if entry.restorable() == 0 {
+        anyhow::bail!(
+            "that run has nothing in the recovery bin (mode: {})",
+            if entry.mode.is_empty() {
+                "unknown"
+            } else {
+                &entry.mode
+            }
+        );
+    }
+    let (restored, errors) = cleaner::undo(&entry, &mut journal);
+    env.paths.save_journal(&journal)?;
+    for e in &errors {
+        out!("{} {e}", env.red("✗"));
+    }
+    out!(
+        "{} {restored} item(s) restored, {} failed",
+        env.green("✓"),
+        errors.len()
+    );
+    for item in env.state.history[n - run].items.iter_mut() {
+        if item.recovery_id.is_some() && !errors.iter().any(|e| e.contains(&item.label)) {
+            item.recovery_id = None;
+        }
+    }
+    env.paths.save_state(&env.state)?;
+    Ok(())
+}
+
+pub fn cmd_recovery(env: &Env, purge: bool, empty: bool, json: bool) -> Result<()> {
+    let mut journal = env.paths.load_journal();
+    journal.prune_missing();
+    if empty {
+        let mut n = 0;
+        let mut bytes = 0;
+        for e in &journal.entries {
+            if recovery::purge_entry(e).is_ok() {
+                n += 1;
+                bytes += e.size;
+            }
+        }
+        journal.entries.clear();
+        env.paths.save_journal(&journal)?;
+        out!("emptied recovery bin: {n} items, {}", human_size(bytes));
+        return Ok(());
+    }
+    if purge {
+        let (n, bytes) = recovery::purge_older_than(&mut journal, env.config.clean.recovery_days);
+        env.paths.save_journal(&journal)?;
+        out!(
+            "purged {n} items older than {} days, {}",
+            env.config.clean.recovery_days,
+            human_size(bytes)
+        );
+        return Ok(());
+    }
+    if json {
+        out!("{}", serde_json::to_string_pretty(&journal)?);
+        return Ok(());
+    }
+    if journal.entries.is_empty() {
+        out!("Recovery bin is empty.");
+        return Ok(());
+    }
+    for e in journal.entries.iter().rev() {
+        out!(
+            "{}  {}  {:>9}  {}  {}",
+            env.dim(&e.id),
+            e.run_at.format("%Y-%m-%d %H:%M"),
+            human_size(e.size),
+            env.bold(&e.label),
+            env.dim(&compact_path(&e.original, &env.paths.home))
+        );
+    }
+    out!(
+        "\n{} items · {} · `cleanprojects undo --id <ID>` restores one, `cleanprojects recovery --purge` frees old ones",
+        journal.entries.len(),
+        env.orange(&human_size(journal.total_size()))
+    );
+    Ok(())
+}
+
+pub fn cmd_explore(env: &Env, path: Option<PathBuf>, top: usize, json: bool) -> Result<()> {
+    let dir = path.unwrap_or_else(|| env.paths.home.clone());
+    let nodes = cleanprojects_core::list_dir(&dir);
+    if json {
+        out!(
+            "{}",
+            serde_json::to_string_pretty(&nodes.iter().take(top).collect::<Vec<_>>())?
+        );
+        return Ok(());
+    }
+    let total: u64 = nodes.iter().map(|n| n.size).sum();
+    out!(
+        "{}  {}",
+        env.bold(&dir.display().to_string()),
+        env.orange(&human_size(total))
+    );
+    let width = terminal_width().clamp(60, 140);
+    let bar_w = width.saturating_sub(12 + 2 + 8 + 2 + 40).clamp(10, 40);
+    let max = nodes.first().map(|n| n.size).unwrap_or(1).max(1);
+    for n in nodes.iter().take(top) {
+        let filled = ((n.size as f64 / max as f64) * bar_w as f64).round() as usize;
+        out!(
+            "{:>9}  {}{}  {}{}",
+            human_size(n.size),
+            env.orange(&"█".repeat(filled)),
+            env.dim(&"░".repeat(bar_w - filled)),
+            if n.is_dir {
+                env.bold(&n.name)
+            } else {
+                n.name.clone()
+            },
+            if n.is_dir { "/" } else { "" }
+        );
+    }
+    if nodes.len() > top {
+        out!(
+            "{}",
+            env.dim(&format!("… {} more entries", nodes.len() - top))
+        );
+    }
+    Ok(())
+}
+
+pub const SKILL_MD: &str = include_str!("../../../../docs/agent-skill/SKILL.md");
+
+pub fn cmd_skill(env: &Env, install: bool) -> Result<()> {
+    if !install {
+        out!("{}", SKILL_MD);
+        return Ok(());
+    }
+    let dir = env.paths.home.join(".claude/skills/cleanprojects");
+    std::fs::create_dir_all(&dir)?;
+    let file = dir.join("SKILL.md");
+    std::fs::write(&file, SKILL_MD)?;
+    out!("installed {}", file.display());
+    Ok(())
 }

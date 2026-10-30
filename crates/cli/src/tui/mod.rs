@@ -10,11 +10,13 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use cleanprojects_core::cleaner::{self, CleanEvent, CleanOptions};
+use cleanprojects_core::cleaner::{self, CleanEvent, CleanMode};
 use cleanprojects_core::scan::{self, ScanContext, ScanEvent};
-use cleanprojects_core::{Candidate, Category, DiskInfo, HistoryEntry, Lang, Risk, Strings};
+use cleanprojects_core::{
+    Candidate, Category, DiskInfo, HistoryEntry, Lang, Node, Risk, Strings, Volume,
+};
 
-use crate::cli::commands::{build_context, Env};
+use crate::cli::commands::{build_context, clean_options, Env};
 use crate::cli::ScanArgs;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -22,15 +24,17 @@ pub enum Tab {
     Overview,
     Candidates,
     Git,
+    Explore,
     History,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [
+    pub const ALL: [Tab; 6] = [
         Tab::Overview,
         Tab::Candidates,
         Tab::Git,
+        Tab::Explore,
         Tab::History,
         Tab::Settings,
     ];
@@ -92,8 +96,16 @@ pub struct App {
     pub sort: Sort,
     pub show_detail: bool,
     pub modal: Option<Modal>,
-    pub use_trash: bool,
+    pub mode: CleanMode,
     pub dry_run: bool,
+    pub volumes: Vec<Volume>,
+    pub guarded: usize,
+    pub cached: bool,
+    pub explore_dir: std::path::PathBuf,
+    pub explore_nodes: Vec<Node>,
+    pub explore_cursor: usize,
+    pub explore_loading: bool,
+    pub explore_rx: Option<Receiver<(std::path::PathBuf, Vec<Node>)>>,
     pub clean_rx: Option<Receiver<CleanEvent>>,
     pub clean_log: Vec<String>,
     pub clean_progress: (usize, usize, String),
@@ -106,9 +118,12 @@ pub struct App {
 impl App {
     fn new(env: Env, args: ScanArgs) -> App {
         let lang = env.config.ui.language;
-        let use_trash = env.config.clean.use_trash;
+        let mode = CleanMode::parse(&env.config.clean.mode);
         let disk = cleanprojects_core::disk_for(&env.paths.home);
-        App {
+        let volumes = cleanprojects_core::volumes(&env.paths.home);
+        let home = env.paths.home.clone();
+        let cached = cleanprojects_core::load_cache(&env.paths.scan_cache_file);
+        let mut app = App {
             env,
             args,
             lang,
@@ -133,8 +148,16 @@ impl App {
             sort: Sort::Size,
             show_detail: false,
             modal: None,
-            use_trash,
+            mode,
             dry_run: false,
+            volumes,
+            guarded: 0,
+            cached: false,
+            explore_dir: home,
+            explore_nodes: Vec::new(),
+            explore_cursor: 0,
+            explore_loading: false,
+            explore_rx: None,
             clean_rx: None,
             clean_log: Vec::new(),
             clean_progress: (0, 0, String::new()),
@@ -142,7 +165,14 @@ impl App {
             tick: 0,
             should_quit: false,
             pending_state: None,
+        };
+        if let Some(c) = cached {
+            app.candidates = c.candidates;
+            app.guarded = c.guarded;
+            app.scan_stats = Some((c.projects, c.repos, c.duration_ms));
+            app.cached = true;
         }
+        app
     }
 
     pub fn s(&self) -> &'static Strings {
@@ -158,7 +188,9 @@ impl App {
             return;
         }
         self.scanning = true;
-        self.candidates.clear();
+        if !self.cached {
+            self.candidates.clear();
+        }
         self.selected.clear();
         self.cursor = 0;
         self.scan_stats = None;
@@ -182,6 +214,10 @@ impl App {
                         self.scan_msg = message;
                     }
                     Ok(ScanEvent::Found(c)) => {
+                        if self.cached {
+                            self.cached = false;
+                            self.candidates.clear();
+                        }
                         if !self.candidates.iter().any(|x| x.id == c.id) {
                             self.candidates.push(*c);
                         }
@@ -199,6 +235,10 @@ impl App {
                 }
             }
             if let Some(r) = done {
+                let _ = cleanprojects_core::save_cache(&self.env.paths.scan_cache_file, &r);
+                self.cached = false;
+                self.guarded = r.guarded;
+                self.volumes = r.volumes.clone();
                 self.candidates = r.candidates;
                 self.disk = r.disk;
                 self.scan_stats = Some((r.projects, r.repos, r.duration_ms));
@@ -207,6 +247,15 @@ impl App {
                 self.env.state.last_scan_at = Some(r.started_at);
                 self.env.state.last_recoverable = self.candidates.iter().map(|c| c.size).sum();
                 let _ = self.env.paths.save_state(&self.env.state);
+            }
+        }
+        if let Some(rx) = &self.explore_rx {
+            if let Ok((dir, nodes)) = rx.try_recv() {
+                self.explore_dir = dir;
+                self.explore_nodes = nodes;
+                self.explore_cursor = 0;
+                self.explore_loading = false;
+                self.explore_rx = None;
             }
         }
         if let Some(rx) = &self.clean_rx {
@@ -282,22 +331,22 @@ impl App {
             return;
         }
         let ctx = self.ctx();
-        let opts = CleanOptions {
-            dry_run: self.dry_run,
-            use_trash: self.use_trash,
-            home: self.env.paths.home.clone(),
-            protected: ctx.protected,
-        };
+        let opts = clean_options(&self.env, &ctx, self.dry_run, self.mode, false);
         let (tx, rx) = std::sync::mpsc::channel();
         let paths = self.env.paths.clone();
         let state_file_state = std::sync::Arc::new(std::sync::Mutex::new(self.env.state.clone()));
         let shared = state_file_state.clone();
         std::thread::spawn(move || {
-            let entry = cleaner::run(&items, &opts, |ev| {
+            let outcome = cleaner::run_with_journal(&items, &opts, &mut |ev| {
                 let _ = tx.send(ev);
             });
+            if !outcome.recovered.is_empty() {
+                let mut journal = paths.load_journal();
+                cleaner::record_recovered(&mut journal, outcome.recovered);
+                let _ = paths.save_journal(&journal);
+            }
             let mut st = shared.lock().unwrap();
-            st.history.push(entry);
+            st.history.push(outcome.entry);
             let _ = paths.save_state(&st);
             paths.append_log("clean finished (tui)");
         });
@@ -365,8 +414,45 @@ impl App {
         (n, total)
     }
 
+    fn explore(&mut self, dir: std::path::PathBuf) {
+        if self.explore_loading {
+            return;
+        }
+        self.explore_loading = true;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let nodes = cleanprojects_core::list_dir(&dir);
+            let _ = tx.send((dir, nodes));
+        });
+        self.explore_rx = Some(rx);
+    }
+
+    fn undo_selected_history(&mut self) {
+        let n = self.env.state.history.len();
+        if n == 0 {
+            return;
+        }
+        let idx = n - 1 - self.history_cursor.min(n - 1);
+        let entry = self.env.state.history[idx].clone();
+        if entry.restorable() == 0 {
+            self.toast("nothing to restore in this run");
+            return;
+        }
+        let mut journal = self.env.paths.load_journal();
+        let (restored, errors) = cleaner::undo(&entry, &mut journal);
+        let _ = self.env.paths.save_journal(&journal);
+        for item in self.env.state.history[idx].items.iter_mut() {
+            if item.recovery_id.is_some() && !errors.iter().any(|e| e.contains(&item.label)) {
+                item.recovery_id = None;
+            }
+        }
+        let _ = self.env.paths.save_state(&self.env.state);
+        self.toast(format!("↺ {restored} restored, {} failed", errors.len()));
+    }
+
     fn cursor_mut(&mut self) -> &mut usize {
         match self.tab {
+            Tab::Explore => &mut self.explore_cursor,
             Tab::Git => &mut self.git_cursor,
             Tab::History => &mut self.history_cursor,
             Tab::Settings => &mut self.settings_cursor,
@@ -379,6 +465,7 @@ impl App {
             Tab::Candidates | Tab::Git => self.visible_all().len(),
             Tab::History => self.env.state.history.len(),
             Tab::Settings => ui::SETTINGS_ROWS,
+            Tab::Explore => self.explore_nodes.len(),
             Tab::Overview => 0,
         }
     }
@@ -424,7 +511,7 @@ impl App {
             Some(Modal::Confirm) => {
                 match key.code {
                     KeyCode::Enter | KeyCode::Char('y') => self.start_clean(),
-                    KeyCode::Char('t') => self.use_trash = !self.use_trash,
+                    KeyCode::Char('t') => self.mode = next_mode(self.mode),
                     KeyCode::Char('n') if key.modifiers.is_empty() => self.modal = None,
                     KeyCode::Char('d') => self.dry_run = !self.dry_run,
                     KeyCode::Esc => self.modal = None,
@@ -474,8 +561,15 @@ impl App {
             KeyCode::Char('1') => self.tab = Tab::Overview,
             KeyCode::Char('2') => self.tab = Tab::Candidates,
             KeyCode::Char('3') => self.tab = Tab::Git,
-            KeyCode::Char('4') => self.tab = Tab::History,
-            KeyCode::Char('5') => self.tab = Tab::Settings,
+            KeyCode::Char('4') => {
+                self.tab = Tab::Explore;
+                if self.explore_nodes.is_empty() {
+                    let d = self.explore_dir.clone();
+                    self.explore(d);
+                }
+            }
+            KeyCode::Char('5') => self.tab = Tab::History,
+            KeyCode::Char('6') => self.tab = Tab::Settings,
             KeyCode::Char('?') => self.modal = Some(Modal::Help),
             KeyCode::Char('r') => self.start_scan(),
             KeyCode::Char('L') => {
@@ -497,6 +591,68 @@ impl App {
         match self.tab {
             Tab::Candidates | Tab::Git => self.handle_list_key(key),
             Tab::Settings => self.handle_settings_key(key),
+            Tab::Explore => self.handle_explore_key(key),
+            Tab::History if key.code == KeyCode::Char('u') => self.undo_selected_history(),
+            _ => {}
+        }
+        if self.tab == Tab::Explore && self.explore_nodes.is_empty() && !self.explore_loading {
+            let d = self.explore_dir.clone();
+            self.explore(d);
+        }
+    }
+
+    fn handle_explore_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                if let Some(n) = self.explore_nodes.get(self.explore_cursor) {
+                    if n.is_dir {
+                        let d = n.path.clone();
+                        self.explore(d);
+                    }
+                }
+            }
+            KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
+                if let Some(parent) = self.explore_dir.parent() {
+                    let d = parent.to_path_buf();
+                    self.explore(d);
+                }
+            }
+            KeyCode::Char('~') => {
+                let d = self.env.paths.home.clone();
+                self.explore(d);
+            }
+            KeyCode::Char('V') => {
+                // jump to the next volume root
+                if !self.volumes.is_empty() {
+                    let cur = self
+                        .volumes
+                        .iter()
+                        .position(|v| self.explore_dir.starts_with(&v.mount))
+                        .unwrap_or(0);
+                    let next = &self.volumes[(cur + 1) % self.volumes.len()];
+                    let d = next.mount.clone();
+                    self.explore(d);
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(n) = self.explore_nodes.get(self.explore_cursor).cloned() {
+                    let c = Candidate::new(
+                        n.name.clone(),
+                        "Selected in the explorer.",
+                        Category::Temp,
+                        Risk::High,
+                        cleanprojects_core::Action::RemovePath {
+                            path: n.path.clone(),
+                        },
+                    )
+                    .with_size(n.size, true);
+                    if !self.candidates.iter().any(|x| x.id == c.id) {
+                        self.candidates.push(c.clone());
+                    }
+                    self.selected.insert(c.id);
+                    self.toast("added to selection (Candidates tab, d to clean)");
+                }
+            }
             _ => {}
         }
     }
@@ -593,12 +749,8 @@ impl App {
                 }
             }
             KeyCode::Char('t') => {
-                self.use_trash = !self.use_trash;
-                let msg = if self.use_trash {
-                    self.s().confirm_trash
-                } else {
-                    self.s().confirm_permanent
-                };
+                self.mode = next_mode(self.mode);
+                let msg = mode_label(self.mode, self.s());
                 self.toast(msg);
             }
             KeyCode::Char('d') | KeyCode::Enter => {
@@ -616,6 +768,8 @@ impl App {
                 let result = cleanprojects_core::ScanResult {
                     candidates: self.candidates.clone(),
                     disk: self.disk.clone(),
+                    volumes: self.volumes.clone(),
+                    guarded: self.guarded,
                     roots: ctx.roots,
                     protected: ctx.protected,
                     projects: self.scan_stats.map(|s| s.0).unwrap_or(0),
@@ -646,7 +800,11 @@ impl App {
         };
         let cfg = &mut self.env.config;
         match self.settings_cursor {
-            0 => cfg.clean.use_trash = !cfg.clean.use_trash,
+            0 => {
+                let m = next_mode(CleanMode::parse(&cfg.clean.mode));
+                cfg.clean.mode = m.as_str().to_string();
+                cfg.clean.use_trash = m != CleanMode::Permanent;
+            }
             1 => cfg.git.enabled = !cfg.git.enabled,
             2 => cfg.git.merged_branches = !cfg.git.merged_branches,
             3 => cfg.git.gc = !cfg.git.gc,
@@ -660,10 +818,32 @@ impl App {
             }
             7 => cfg.scan.max_depth = (cfg.scan.max_depth as i64 + dir).clamp(1, 16) as usize,
             8 => cfg.scan.default_roots = !cfg.scan.default_roots,
+            9 => cfg.scan.volumes = !cfg.scan.volumes,
+            10 => cfg.clean.block_running_apps = !cfg.clean.block_running_apps,
+            11 => {
+                cfg.clean.recovery_days =
+                    (cfg.clean.recovery_days as i64 + dir).clamp(1, 365) as u64
+            }
             _ => {}
         }
-        self.use_trash = self.env.config.clean.use_trash;
+        self.mode = CleanMode::parse(&self.env.config.clean.mode);
         self.save_config();
+    }
+}
+
+pub fn next_mode(m: CleanMode) -> CleanMode {
+    match m {
+        CleanMode::Recovery => CleanMode::Trash,
+        CleanMode::Trash => CleanMode::Permanent,
+        CleanMode::Permanent => CleanMode::Recovery,
+    }
+}
+
+pub fn mode_label(m: CleanMode, s: &Strings) -> &'static str {
+    match m {
+        CleanMode::Recovery => s.confirm_recovery,
+        CleanMode::Trash => s.confirm_trash,
+        CleanMode::Permanent => s.confirm_permanent,
     }
 }
 

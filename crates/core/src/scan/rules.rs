@@ -181,7 +181,123 @@ pub static RULES: &[Rule] = &[
     r("User logs", "~/Library/Logs", Temp, Low, "Application log files.", MAC),
     r("Windows temp", "$TEMP", Temp, Medium, "User temporary files. Close running installers first.", WIN),
     r("Windows crash dumps", "$LOCALAPPDATA/CrashDumps", Temp, Low, "Application crash dumps.", WIN),
+    // ── AI tooling ──────────────────────────────────────────────────────────
+    r("LM Studio models", "~/.lmstudio/models", AppData, High, "Local LLM weights downloaded by LM Studio.", ALL),
+    r("LM Studio models", "$CACHE/lm-studio/models", AppData, High, "Local LLM weights downloaded by LM Studio.", ALL),
+    r("Ollama models", "$LOCALAPPDATA/Ollama/models", AppData, High, "Local LLM weights. Re-pull with `ollama pull`.", WIN),
+    r("Hugging Face hub cache", "$LOCALAPPDATA/huggingface/hub", PackageCache, Medium, "Downloaded models and datasets.", WIN),
+    r("Claude Code debug logs", "~/.claude/debug", Temp, Low, "Claude Code session debug logs.", ALL),
+    r("Codex logs", "~/.codex/log", Temp, Low, "Codex CLI logs.", ALL),
+    r("Playwright browsers", "$CACHE/ms-playwright", PackageCache, Medium, "Browser builds downloaded by Playwright. Re-run `npx playwright install`.", ALL),
+    r("Puppeteer browsers", "$CACHE/puppeteer", PackageCache, Medium, "Chromium builds downloaded by Puppeteer.", ALL),
+    r("Cypress binaries", "$CACHE/Cypress", PackageCache, Medium, "Cypress app binaries per version.", ALL),
+    r("Electron downloads", "$CACHE/electron", PackageCache, Low, "Electron zip cache used by electron-builder.", ALL),
+    r("node-gyp headers", "$CACHE/node-gyp", PackageCache, Low, "Node headers for native module builds.", ALL),
+    r("Jupyter runtime", "~/Library/Jupyter/runtime", Temp, Low, "Kernel connection files.", MAC),
+    r("Xcode previews", "~/Library/Developer/Xcode/UserData/Previews", BuildCache, Low, "SwiftUI preview build cache.", MAC),
+    r("Carthage cache", "$CACHE/org.carthage.CarthageKit", PackageCache, Low, "Carthage dependency cache.", MAC),
+    r("SwiftPM cache", "$CACHE/org.swift.swiftpm", PackageCache, Low, "Swift Package Manager repository cache.", MAC),
+    r("Flutter engine artifacts", "~/flutter/bin/cache", BuildCache, Medium, "Flutter SDK engine artifacts. Re-downloaded by `flutter precache`.", UNIX),
+    r("Terraform plugin cache", "~/.terraform.d/plugin-cache", PackageCache, Low, "Provider binaries cache.", ALL),
+    r("Helm cache", "$CACHE/helm", PackageCache, Low, "Helm chart repository cache.", ALL),
+    r("kubectl cache", "~/.kube/cache", Temp, Low, "kubectl discovery cache.", ALL),
+    r("Vercel CLI cache", "$DATA/com.vercel.cli", Temp, Low, "Vercel CLI cache.", ALL),
+    r("Gradle build-scan", "~/.gradle/build-scan-data", Temp, Low, "Build scan uploads.", ALL),
+    r("Android Studio logs", "~/Library/Logs/Google", Temp, Low, "Android Studio log files.", MAC),
+    r("Windows delivery optimization", "$LOCALAPPDATA/Microsoft/Windows/DeliveryOptimization", Temp, Low, "Windows Update download cache.", WIN),
+    r("Windows thumbnail cache", "$LOCALAPPDATA/Microsoft/Windows/Explorer", Temp, Low, "Explorer thumbnail databases.", WIN),
 ];
+
+/// Owning application (`owner`) and the process names that lock it (`app`), by label prefix.
+/// Process names are `|` separated aliases; an empty `app` means cleaning is safe while running.
+pub static OWNERS: &[(&str, &str, &str)] = &[
+    ("Xcode", "Xcode", ""),
+    (
+        "Simulator devices",
+        "Xcode",
+        "Simulator|CoreSimulatorService",
+    ),
+    ("Simulator", "Xcode", ""),
+    (
+        "Android",
+        "Android Studio",
+        "qemu-system-x86_64|qemu-system-aarch64|emulator",
+    ),
+    ("Cursor global", "Cursor", "Cursor"),
+    ("Cursor workspace", "Cursor", "Cursor"),
+    ("Cursor", "Cursor", ""),
+    ("VS Code workspace", "VS Code", "Code|Visual Studio Code"),
+    ("VS Code", "VS Code", ""),
+    ("Windsurf", "Windsurf", ""),
+    ("Zed", "Zed", ""),
+    ("JetBrains", "JetBrains", ""),
+    ("Claude VM", "Claude", "Claude"),
+    ("Claude", "Claude", ""),
+    ("Codex", "Codex", ""),
+    ("Copilot", "Copilot", ""),
+    ("Chrome", "Chrome", "Google Chrome|chrome"),
+    ("Chromium", "Chromium", "chromium"),
+    ("Brave", "Brave", "Brave Browser|brave"),
+    ("Arc", "Arc", "Arc"),
+    ("Firefox", "Firefox", "firefox"),
+    ("Edge", "Edge", "Microsoft Edge|msedge"),
+    ("Safari", "Safari", "Safari"),
+    ("Slack", "Slack", "Slack"),
+    ("Discord", "Discord", "Discord"),
+    ("Teams", "Teams", "Teams|MSTeams"),
+    ("Spotify", "Spotify", "Spotify"),
+    ("Notion", "Notion", "Notion"),
+    ("Figma", "Figma", "Figma"),
+    ("Postman", "Postman", "Postman"),
+    ("Ollama", "Ollama", "ollama"),
+    ("LM Studio", "LM Studio", "LM Studio"),
+    ("Hugging Face", "Hugging Face", ""),
+    ("Docker", "Docker", ""),
+    ("Vagrant", "Vagrant", ""),
+    ("Minikube", "Minikube", ""),
+    ("Colima", "Colima", ""),
+    ("Lima", "Lima", ""),
+    ("npm", "npm", ""),
+    ("Yarn", "Yarn", ""),
+    ("pnpm", "pnpm", ""),
+    ("Bun", "Bun", ""),
+    ("Deno", "Deno", ""),
+    ("Cargo", "Cargo", ""),
+    ("rustup", "rustup", ""),
+    ("Go ", "Go", ""),
+    ("pip", "pip", ""),
+    ("uv", "uv", ""),
+    ("Poetry", "Poetry", ""),
+    ("conda", "conda", ""),
+    ("Gradle", "Gradle", ""),
+    ("Maven", "Maven", ""),
+    ("CocoaPods", "CocoaPods", ""),
+    ("Dart", "Dart", ""),
+    ("Flutter", "Flutter", ""),
+    ("Composer", "Composer", ""),
+    ("NuGet", "NuGet", ""),
+    ("RubyGems", "RubyGems", ""),
+    ("Hex", "Hex", ""),
+    ("Homebrew", "Homebrew", ""),
+    ("Unity", "Unity", "Unity"),
+    ("Playwright", "Playwright", ""),
+    ("Puppeteer", "Puppeteer", ""),
+    ("Cypress", "Cypress", ""),
+    ("Electron", "Electron", ""),
+    ("Bazel", "Bazel", ""),
+    ("User trash", "System", ""),
+    ("User logs", "System", ""),
+    ("Windows", "Windows", ""),
+];
+
+/// Look up (owner, app) for a rule label.
+pub fn owner_of(label: &str) -> (&'static str, &'static str) {
+    OWNERS
+        .iter()
+        .find(|(prefix, _, _)| label.starts_with(prefix))
+        .map(|(_, owner, app)| (*owner, *app))
+        .unwrap_or(("", ""))
+}
 
 /// The current OS mask.
 pub fn current_os() -> u8 {
@@ -266,6 +382,14 @@ mod tests {
         let data = resolve_template("$DATA/Code/Cache", home).unwrap();
         assert!(data.ends_with("Code/Cache"));
         assert!(resolve_template("$NOPE/x", home).is_none());
+    }
+
+    #[test]
+    fn owners_resolve() {
+        assert_eq!(owner_of("Cursor global state DB"), ("Cursor", "Cursor"));
+        assert_eq!(owner_of("Cursor cache"), ("Cursor", ""));
+        assert_eq!(owner_of("Xcode DerivedData").0, "Xcode");
+        assert_eq!(owner_of("Something unknown"), ("", ""));
     }
 
     #[test]

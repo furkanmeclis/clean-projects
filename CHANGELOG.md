@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.1.0
+
+### Added
+- Recovery bin: removed items are renamed into a per-volume holding folder and can be restored from History, `cleanprojects undo` or `cleanprojects recovery`; automatic purge after `clean.recovery_days`.
+- Every mounted volume: external SSDs, USB drives and network shares are listed, external writable volumes are scanned for projects, their trash is offered, and recovery bins live on the same volume.
+- Explorer: squarified treemap and list browser in the desktop app, a directory browser tab in the TUI, `cleanprojects explore` on the CLI.
+- Menu bar / system tray with recoverable size, close-to-tray, scheduled background scans with notifications, launch at login, single instance, in-app updater (signed releases).
+- Guards: artifacts with git-tracked files, nested repositories or private keys are never offered; items owned by a running application are blocked until it is closed (`--force` to override).
+- Accurate sizes: allocated bytes with hardlinks counted once; apparent size kept for reference.
+- Coverage: Godot, Unreal, Zig, Haskell, Terraform, Jupyter, Pixi projects; per-profile Cargo `target/`; Docker/Podman per unused image; iOS simulators per device; installers in Downloads; superseded iOS DeviceSupport and JetBrains versions; LM Studio, Playwright, Puppeteer, Cypress, Electron, Helm, Terraform caches and more.
+- Candidates can be grouped by category, app, project or volume; owner shown in details and reports.
+- Last scan is cached and shown instantly on launch while the rescan runs.
+- `cleanprojects scan --json-stream`, `cleanprojects volumes`, `cleanprojects skill --install` (agent skill for Claude Code, Codex, Cursor).
+- Packaging templates (Homebrew formula and cask, Scoop, winget, AUR) and `cargo binstall` metadata.
+
+### Changed
+- `clean.use_trash` is superseded by `clean.mode` (`recovery`, `trash`, `permanent`); old config files keep working.
+
 ## 2.0.0
 
 Complete rewrite in Rust. The Go + React macOS app moved to `legacy/v1`.
