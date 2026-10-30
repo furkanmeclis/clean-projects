@@ -1,0 +1,35 @@
+[package]
+name = "cleanprojects"
+description = "Developer disk cleanup: package caches, build artifacts, IDE/browser caches, Docker and git worktree maintenance. Terminal UI + scriptable CLI."
+readme = "../../README.md"
+keywords = ["cleanup", "disk", "cache", "tui", "developer-tools"]
+categories = ["command-line-utilities", "filesystem", "development-tools"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+default-run = "cleanprojects"
+
+[[bin]]
+name = "cleanprojects"
+path = "src/main.rs"
+
+[dependencies]
+cleanprojects-core.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+clap = { version = "4.5", features = ["derive", "env"] }
+clap_complete = "4.5"
+crossterm = "0.28"
+ratatui = "0.29"
+serde_json.workspace = true
+unicode-width = "0.2"
+which.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"
+assert_cmd = "2.0"
+predicates = "3.1"

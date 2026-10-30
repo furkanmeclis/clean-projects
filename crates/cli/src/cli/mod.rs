@@ -1,0 +1,187 @@
+//! Command-line interface. `cleanprojects` without a subcommand opens the TUI.
+
+pub mod commands;
+
+use std::path::PathBuf;
+
+use clap::{Args, Parser, Subcommand, ValueEnum};
+
+use cleanprojects_core::core::i18n::Lang;
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "cleanprojects",
+    version,
+    about = "Developer disk cleanup: caches, build artifacts, Docker and git worktrees.",
+    long_about = "CleanProjects v2 scans package caches, build outputs, IDE and browser caches, \
+container engines and git repositories, then lets you remove only what you select. \
+Run without a subcommand for the interactive terminal UI.",
+    propagate_version = true
+)]
+pub struct Cli {
+    /// UI language (en, tr). Overrides the config file.
+    #[arg(long, global = true, env = "CLEANPROJECTS_LANG")]
+    pub lang: Option<String>,
+
+    /// Use a different config directory (default: OS config dir).
+    #[arg(
+        long,
+        global = true,
+        env = "CLEANPROJECTS_CONFIG_DIR",
+        value_name = "DIR"
+    )]
+    pub config_dir: Option<PathBuf>,
+
+    /// Disable colours in CLI output (also honours the NO_COLOR environment variable).
+    #[arg(long, global = true)]
+    pub no_color: bool,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Open the interactive terminal UI (default).
+    Tui(ScanArgs),
+    /// Scan and print candidates without changing anything.
+    Scan(ScanCmd),
+    /// Scan, then clean the matching candidates.
+    Clean(CleanCmd),
+    /// Exclude a candidate id or path from future cleanups.
+    Exclude { targets: Vec<String> },
+    /// Remove an exclusion (or `--all`).
+    Include {
+        targets: Vec<String>,
+        #[arg(long)]
+        all: bool,
+    },
+    /// Show previous cleanups.
+    History {
+        #[arg(long)]
+        json: bool,
+        /// Show the most recent N entries.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
+    /// Show or edit configuration.
+    Config(ConfigCmd),
+    /// Check optional tools, scan roots and protected paths.
+    Doctor,
+    /// Generate shell completions.
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct ScanArgs {
+    /// Extra project root(s) to scan (repeatable).
+    #[arg(short = 'r', long = "root", value_name = "DIR")]
+    pub roots: Vec<PathBuf>,
+    /// Only scan the given roots, ignore defaults and config roots.
+    #[arg(long)]
+    pub only_roots: bool,
+    /// Skip git maintenance analysis.
+    #[arg(long)]
+    pub no_git: bool,
+    /// Skip global cache rules.
+    #[arg(long)]
+    pub no_global: bool,
+    /// Skip project artifact scan.
+    #[arg(long)]
+    pub no_projects: bool,
+    /// Skip docker/pnpm/simctl probes.
+    #[arg(long)]
+    pub no_tools: bool,
+    /// Minimum candidate size in MB.
+    #[arg(long, value_name = "MB")]
+    pub min_size: Option<u64>,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct FilterArgs {
+    /// Only these categories (repeatable): project, package-cache, build-cache, ide, browser, container, mobile, git, app-data, temp.
+    #[arg(short = 'c', long = "category", value_name = "CAT")]
+    pub categories: Vec<String>,
+    /// Maximum risk to include: low, medium, high.
+    #[arg(long, value_enum, default_value_t = RiskArg::Medium)]
+    pub max_risk: RiskArg,
+    /// Only artifacts of projects idle for the configured stale period.
+    #[arg(long)]
+    pub stale: bool,
+    /// Only candidates whose label or path contains this text.
+    #[arg(short = 'q', long, value_name = "TEXT")]
+    pub query: Option<String>,
+    /// Include candidates that were excluded earlier.
+    #[arg(long)]
+    pub include_excluded: bool,
+    /// Specific candidate ids (from `scan`), repeatable.
+    #[arg(long = "id", value_name = "ID")]
+    pub ids: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq, Default)]
+pub enum RiskArg {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ScanCmd {
+    #[command(flatten)]
+    pub scan: ScanArgs,
+    #[command(flatten)]
+    pub filter: FilterArgs,
+    /// Print JSON instead of a table.
+    #[arg(long)]
+    pub json: bool,
+    /// Write a Markdown report to this file.
+    #[arg(long, value_name = "FILE")]
+    pub report: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct CleanCmd {
+    #[command(flatten)]
+    pub scan: ScanArgs,
+    #[command(flatten)]
+    pub filter: FilterArgs,
+    /// Show what would be removed and exit.
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+    /// Do not ask for confirmation.
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+    /// Delete permanently instead of moving to trash.
+    #[arg(long)]
+    pub permanent: bool,
+    /// Print the result as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ConfigCmd {
+    /// Print the config file path.
+    #[arg(long)]
+    pub path: bool,
+    /// Write a config file with defaults (if missing).
+    #[arg(long)]
+    pub init: bool,
+    /// Set a value: `--set clean.use_trash=false` (repeatable).
+    #[arg(long = "set", value_name = "KEY=VALUE")]
+    pub sets: Vec<String>,
+    /// Reset to defaults.
+    #[arg(long)]
+    pub reset: bool,
+}
+
+impl Cli {
+    pub fn lang_override(&self) -> Option<Lang> {
+        self.lang.as_deref().and_then(Lang::parse)
+    }
+}

@@ -2,101 +2,173 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    tags: ["v*.*.*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v2.0.0)"
+        required: true
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
-    name: Build macOS binaries
-    runs-on: macos-latest
+  cli:
+    name: CLI · ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - goos: darwin
-            goarch: arm64
-            artifact: clean-projects-darwin-arm64
-          - goos: darwin
-            goarch: amd64
-            artifact: clean-projects-darwin-amd64
-
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - uses: actions/checkout@v5
         with:
-          go-version-file: backend/go.mod
-          cache-dependency-path: backend/go.mod
-
-      - name: Set up Node
-        uses: actions/setup-node@v5
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
-
-      - name: Embed frontend
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked -p cleanprojects --target ${{ matrix.target }}
+      - name: Test
+        if: "!contains(matrix.target, 'aarch64-unknown-linux')"
+        run: cargo test --release --locked -p cleanprojects-core -p cleanprojects --target ${{ matrix.target }}
+      - name: Package (unix)
+        if: runner.os != 'Windows'
         run: |
-          rm -rf backend/static
-          mkdir -p backend/static
-          cp -R frontend/dist/. backend/static/
-
-      - name: Test backend
-        working-directory: backend
-        run: go test ./...
-
-      - name: Build binary
-        working-directory: backend
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
-        run: go build -trimpath -ldflags="-s -w" -o ../${{ matrix.artifact }} .
-
-      - name: Archive artifact
+          set -eu
+          name=cleanprojects-${{ matrix.target }}
+          mkdir -p dist/$name
+          cp target/${{ matrix.target }}/release/cleanprojects dist/$name/
+          cp README.md LICENSE dist/$name/
+          tar -C dist -czf dist/$name.tar.gz $name
+          (cd dist && shasum -a 256 $name.tar.gz > $name.tar.gz.sha256)
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }} README.md LICENSE
-          shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v5
+          $name = "cleanprojects-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path dist/$name | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/cleanprojects.exe dist/$name/
+          Copy-Item README.md, LICENSE dist/$name/
+          Compress-Archive -Path dist/$name -DestinationPath dist/$name.zip
+          (Get-FileHash dist/$name.zip -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Out-File -Encoding ascii dist/$name.zip.sha256
+      - uses: actions/upload-artifact@v5
         with:
-          name: ${{ matrix.artifact }}
+          name: cli-${{ matrix.target }}
           path: |
-            ${{ matrix.artifact }}.tar.gz
-            ${{ matrix.artifact }}.tar.gz.sha256
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
 
-  publish:
-    name: Publish GitHub release
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-
+  desktop:
+    name: Desktop · ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon)
+            os: macos-14
+            args: --target aarch64-apple-darwin
+          - name: macOS (Intel)
+            os: macos-13
+            args: --target x86_64-apple-darwin
+          - name: Linux (x86_64)
+            os: ubuntu-22.04
+            args: ""
+          - name: Windows (x86_64)
+            os: windows-latest
+            args: ""
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v5
+      - uses: actions/checkout@v5
         with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-${{ matrix.os }}
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Import Apple signing certificate
+        # Only runs when the repository has signing secrets. Without them the app is
+        # built unsigned (see README › Installing on macOS).
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm certificate.p12
+      - name: Build and upload bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS code signing + notarization (optional; all five must be set)
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "CleanProjects ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseBody: "See the assets below. Desktop installers: `.dmg` (macOS), `.AppImage` / `.deb` / `.rpm` (Linux), `.msi` / `-setup.exe` (Windows). Terminal binaries: `cleanprojects-<target>.tar.gz|zip`."
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          args: ${{ matrix.args }}
+
+  publish-cli:
+    name: Attach CLI binaries
+    needs: [cli, desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: cli-*
           path: dist
           merge-multiple: true
-
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
+      - name: Checksums
+        run: |
+          cd dist && cat *.sha256 > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: |
             dist/*.tar.gz
-            dist/*.sha256
+            dist/*.zip
+            dist/SHA256SUMS.txt

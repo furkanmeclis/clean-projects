@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/cli", "apps/desktop/src-tauri"]
+default-members = ["crates/core", "crates/cli"]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/furkanmeclis/clean-projects"
+homepage = "https://github.com/furkanmeclis/clean-projects"
+authors = ["Furkan Meclis"]
+
+[workspace.dependencies]
+cleanprojects-core = { path = "crates/core", version = "2.0.0" }
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+which = "8.0"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 1

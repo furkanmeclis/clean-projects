@@ -1,22 +1,25 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Desktop app
+/apps/desktop/node_modules/
+/apps/desktop/dist/
+/apps/desktop/src-tauri/target/
+/apps/desktop/src-tauri/gen/schemas/
+
+# Legacy v1 (Go + React)
+/legacy/v1/frontend/node_modules/
+/legacy/v1/frontend/dist/
+/legacy/v1/backend/static/*
+!/legacy/v1/backend/static/placeholder.txt
+
 # Local runtime output
-/clean-projects
-/clean-projects-*
-/clean-projects-state.json
-/clean-projects.log
-/clean-projects.pid
+*.log
+scan.json
+cleanprojects-report-*.md
 
-# Frontend dependencies and build output
-/frontend/node_modules/
-/frontend/dist/
-
-# Generated embedded frontend assets
-/backend/static/*
-!/backend/static/placeholder.txt
-
-# macOS
+# OS / editors
 .DS_Store
-
-# Editor
 .idea/
 .vscode/
-

@@ -1,16 +1,11 @@
 ## Summary
 
-- 
+<!-- What changed and why. -->
 
-## Safety
+## Checklist
 
-- [ ] This change does not touch iCloud Drive or `Library/Mobile Documents`.
-- [ ] Cleanup targets are regenerable or clearly labeled as high risk.
-- [ ] Destructive actions require explicit user selection.
-
-## Testing
-
-- [ ] `make test`
-- [ ] Manual UI scan
-- [ ] Manual cleanup flow, if applicable
-
+- [ ] `cargo fmt --all --check` and `cargo clippy --all-targets -- -D warnings` pass
+- [ ] `cargo test` passes
+- [ ] Desktop: `npm run typecheck && npm run build` pass (if `apps/desktop` changed)
+- [ ] New cleanup rules have a risk level, a description and are platform-gated
+- [ ] Nothing touches protected locations or deletes without confirmation

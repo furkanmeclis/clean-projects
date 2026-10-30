@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+    tags-ignore: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  rust:
+    name: Rust · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: core-cli
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy -p cleanprojects-core -p cleanprojects --all-targets -- -D warnings
+      - name: Test
+        run: cargo test -p cleanprojects-core -p cleanprojects
+      - name: Smoke test CLI
+        run: |
+          cargo run -q -p cleanprojects -- doctor
+          cargo run -q -p cleanprojects -- scan --json --no-tools --no-git --only-roots --root . > scan.json
+          cargo run -q -p cleanprojects -- clean --dry-run --yes --no-tools --no-git --only-roots --root .
+        shell: bash
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - uses: actions/upload-artifact@v5
+        with:
+          name: frontend-dist
+          path: apps/desktop/dist
+          retention-days: 3
+
+  desktop:
+    name: Desktop · ${{ matrix.os }}
+    needs: frontend
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop
+          workspaces: ". -> target"
+      - uses: actions/download-artifact@v5
+        with:
+          name: frontend-dist
+          path: apps/desktop/dist
+      - name: Clippy (desktop)
+        run: cargo clippy -p cleanprojects-desktop -- -D warnings
+      - name: Build (debug)
+        run: cargo build -p cleanprojects-desktop
