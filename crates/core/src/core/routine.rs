@@ -289,7 +289,13 @@ pub fn run(
         cfg.scan.roots = routine.roots.clone();
         cfg.scan.volumes = false;
     }
-    let ctx = ScanContext::new(paths.home.clone(), cfg);
+    let mut ctx = ScanContext::new(paths.home.clone(), cfg);
+    if !routine.roots.is_empty() {
+        // "Only these folders" means exactly that: no global caches, tools or extras.
+        ctx.include_global = false;
+        ctx.include_tools = false;
+        ctx.include_extras = false;
+    }
     let result = scan::scan_blocking(&ctx);
     let _ = scan::save_cache(&paths.scan_cache_file, &result);
     state.record_scan(
