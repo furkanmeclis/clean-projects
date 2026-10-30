@@ -548,8 +548,7 @@ fn dedupe_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut sorted: Vec<PathBuf> = roots
         .iter()
         .filter(|r| r.is_dir())
-        .map(|r| fs::canonicalize(r).unwrap_or_else(|_| r.clone()))
-        .map(strip_verbatim)
+        .map(|r| canonical(r))
         .collect();
     sorted.sort();
     sorted.dedup();
@@ -560,6 +559,12 @@ fn dedupe_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// Canonical form of a path when it exists (resolves symlinks and Windows 8.3
+/// short names), otherwise the path itself.
+pub fn canonical(p: &Path) -> PathBuf {
+    strip_verbatim(fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
 }
 
 /// `fs::canonicalize` on Windows yields `\\?\C:\...`; keep paths readable.
@@ -864,6 +869,6 @@ mod tests {
         let b = a.join("b");
         fs::create_dir_all(&b).unwrap();
         let out = dedupe_roots(&[b.clone(), a.clone(), a.clone(), tmp.path().join("missing")]);
-        assert_eq!(out, vec![fs::canonicalize(&a).unwrap()]);
+        assert_eq!(out, vec![canonical(&a)]);
     }
 }
