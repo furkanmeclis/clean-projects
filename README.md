@@ -358,8 +358,8 @@ legacy/v1        the original Go + React macOS app
 ## Release
 
 ```bash
-git tag v2.0.0
-git push origin v2.0.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 The release workflow builds terminal binaries for five targets and desktop bundles for macOS (both architectures), Linux and Windows, attaches checksums, and publishes the GitHub release.

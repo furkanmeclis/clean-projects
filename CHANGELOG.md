@@ -1,6 +1,8 @@
 # Changelog
 
-## 2.3.0
+## 0.3.0
+
+First release of the Rust CLI and the desktop app (v0.1.0 and v0.2.0 were the legacy Go CLI). It contains everything below; the 2.x headings are internal development milestones that were never published.
 
 ### Added
 - Routines: named scheduled cleanups (daily, weekly, monthly or every N hours) with risk cap, categories, stale-only, minimum age and optional folders. They never delete permanently, never touch high-risk items and skip data of running applications. Desktop: Routines tab with templates, editor, run-now and run log; the app runs due routines while open or in the tray. CLI: `cleanprojects routine list|add|run|enable|disable|remove`, `routine run --due`, and `routine schedule --install` which registers an hourly launchd agent, systemd user timer or Windows scheduled task.

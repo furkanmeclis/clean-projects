@@ -1,7 +1,7 @@
 # Maintainer: Furkan Meclis
 # AUR package for the terminal binary (binary release). Publish as `cleanprojects-bin`.
 pkgname=cleanprojects-bin
-pkgver=2.3.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="Developer disk cleanup: caches, build artifacts, Docker and git worktrees (TUI + CLI)"
 arch=('x86_64' 'aarch64')

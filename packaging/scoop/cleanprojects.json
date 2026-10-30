@@ -1,11 +1,11 @@
 {
-  "version": "2.3.0",
+  "version": "0.3.0",
   "description": "Developer disk cleanup: caches, build artifacts, Docker and git worktrees (TUI + CLI)",
   "homepage": "https://github.com/furkanmeclis/clean-projects",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/furkanmeclis/clean-projects/releases/download/v2.3.0/cleanprojects-x86_64-pc-windows-msvc.zip",
+      "url": "https://github.com/furkanmeclis/clean-projects/releases/download/v0.3.0/cleanprojects-x86_64-pc-windows-msvc.zip",
       "hash": "REPLACE_WITH_SHA256",
       "extract_dir": "cleanprojects-x86_64-pc-windows-msvc"
     }
