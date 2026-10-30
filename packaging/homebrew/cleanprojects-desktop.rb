@@ -1,7 +1,7 @@
 # Homebrew cask for the desktop app (same tap):
 #   brew install --cask furkanmeclis/tap/cleanprojects-desktop
 cask "cleanprojects-desktop" do
-  version "0.3.0"
+  version "0.3.1"
   sha256 arm:   "REPLACE_WITH_SHA256",
          intel: "REPLACE_WITH_SHA256"
 

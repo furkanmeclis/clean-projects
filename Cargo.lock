@@ -25,7 +25,7 @@ checksum = "c2fb6cfd47bf496ff64095c20eaba0c201404ee38714d4142fcfa1dc334fcc7a"
 
 [[package]]
 name = "alloc-stdlib"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b5c1865780388bfa186411ab5f247819487fc4864c6e9c3106611fa347586e1"
 dependencies = [
@@ -515,7 +515,7 @@ dependencies = [
 
 [[package]]
 name = "cassowary"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df8670b8c7b9dae1793364eafadf7239c40d669904660c5960d74cfd80b46a53"
 
@@ -653,7 +653,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "cleanprojects"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -672,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "cleanprojects-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "cleanprojects-desktop"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2538,7 +2538,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "minisign-verify"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "871285dc19d8d0ebe0eef3d0e99a205f2a71363b122632cbbfa4a6c370a960ce"
 
@@ -2655,7 +2655,7 @@ dependencies = [
 
 [[package]]
 name = "normalize-line-endings"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61807f77802ff30975e01f4f071c8ba10c022052f98b3294119f3e615d13e5be"
 

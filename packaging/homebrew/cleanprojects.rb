@@ -4,7 +4,7 @@
 class Cleanprojects < Formula
   desc "Developer disk cleanup: caches, build artifacts, Docker and git worktrees (TUI + CLI)"
   homepage "https://github.com/furkanmeclis/clean-projects"
-  version "0.3.0"
+  version "0.3.1"
   license "MIT"
 
   on_macos do

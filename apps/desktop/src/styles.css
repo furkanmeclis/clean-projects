@@ -121,6 +121,7 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
+html, body { overscroll-behavior: none; }
 body {
   margin: 0; font-family: var(--font-ui); font-size: 13.5px; line-height: 1.45;
   color: var(--ink); background: var(--bg); -webkit-font-smoothing: antialiased;
@@ -140,8 +141,8 @@ h1, h2, h3 { text-wrap: balance; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
 /* ───────── shell ───────── */
-.shell { display: grid; grid-template-columns: var(--rail) 1fr; height: 100%; }
-.rail { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 8px; background: var(--surface); border-right: 1px solid var(--line); }
+.shell { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: 100%; }
+.rail { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 8px; min-height: 0; overflow-y: auto; background: var(--surface); border-right: 1px solid var(--line); }
 .rail-logo { width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center; color: #fff5ee; margin-bottom: 10px;
   background: radial-gradient(120% 120% at 30% 20%, #ff9a4a, #e8520c 55%, #b23a08); box-shadow: 0 8px 18px rgba(217, 86, 15, 0.35), inset 0 1px 0 rgba(255,255,255,.35); }
 .rail-btn { width: 68px; padding: 8px 0 7px; border-radius: 12px; display: grid; justify-items: center; gap: 4px; color: var(--ink-3); font-size: 10.5px; font-weight: 700; letter-spacing: .02em; position: relative; transition: background .12s, color .12s; }
@@ -153,7 +154,9 @@ h1, h2, h3 { text-wrap: balance; }
 .rail-foot { display: grid; gap: 6px; justify-items: center; color: var(--ink-3); }
 .rail-foot .ver { font-family: var(--font-mono); font-size: 9.5px; }
 
-.main { display: grid; grid-template-rows: auto 1fr; min-width: 0; height: 100%; }
+/* Flex column: the update and launch banners sit above the command bar, and the content
+   must take the remaining height (min-height: 0) so it scrolls instead of overflowing. */
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }
 .cmdbar { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--line); min-height: 60px; }
 .cmdbar .title { display: flex; align-items: center; gap: 10px; }
 .cmdbar .title h1 { font-size: 17px; font-weight: 800; letter-spacing: -0.02em; }
@@ -164,7 +167,7 @@ h1, h2, h3 { text-wrap: balance; }
 .scanline.ok { color: var(--ink-2); }
 .scanline.ok svg { color: var(--good); }
 .spacer { flex: 1; }
-.content { overflow: auto; padding: 20px 20px 28px; }
+.content { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 20px 20px 28px; }
 
 /* ───────── buttons ───────── */
 .btn { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 14px; border-radius: 10px; font-weight: 700; font-size: 13px; white-space: nowrap;
@@ -275,7 +278,7 @@ h1, h2, h3 { text-wrap: balance; }
 .toolbar .right { margin-left: auto; display: flex; gap: 6px; }
 
 /* table */
-.table { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); overflow: hidden; box-shadow: var(--shadow-1); }
+.table { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); overflow: auto hidden; box-shadow: var(--shadow-1); }
 .thead, .trow { display: grid; grid-template-columns: 44px 36px minmax(240px, 1fr) 118px 88px 64px 104px 104px; align-items: center; gap: 10px; padding: 0 12px 0 0; }
 .thead { height: 38px; background: var(--surface-2); color: var(--ink-3); font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .07em; }
 .thead button { color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; display: inline-flex; align-items: center; gap: 4px; }
@@ -319,7 +322,7 @@ h1, h2, h3 { text-wrap: balance; }
 .split .thead, .split .trow { grid-template-columns: 44px 36px minmax(160px, 1fr) 96px 76px 100px 40px; }
 .split .acts .ib:not(:last-child) { display: none; }
 .split .thead > :nth-child(6), .split .trow > :nth-child(6) { display: none; }
-.detail { position: sticky; top: 0; }
+.detail { position: sticky; top: 0; max-height: calc(100vh - 140px); overflow: auto; }
 .detail .panel-b { display: grid; gap: 12px; }
 .detail h3 { font-size: 15px; font-weight: 800; letter-spacing: -0.02em; }
 .detail .desc { color: var(--ink-2); line-height: 1.55; }
@@ -376,13 +379,13 @@ h1, h2, h3 { text-wrap: balance; }
 /* modal */
 .backdrop { position: fixed; inset: 0; background: rgba(12, 9, 7, 0.55); backdrop-filter: blur(6px); display: grid; place-items: center; z-index: 50; animation: fade .15s ease; }
 @keyframes fade { from { opacity: 0 } to { opacity: 1 } }
-.modal { width: min(660px, calc(100vw - 48px)); background: var(--surface); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow-2); overflow: hidden; animation: pop .2s cubic-bezier(.2,.8,.2,1); }
+.modal { width: min(660px, calc(100vw - 48px)); max-height: calc(100vh - 48px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow-2); overflow: hidden; animation: pop .2s cubic-bezier(.2,.8,.2,1); }
 @keyframes pop { from { transform: translateY(10px) scale(.98); opacity: 0 } to { transform: none; opacity: 1 } }
 .m-h { padding: 18px 20px 0; display: flex; align-items: center; gap: 10px; }
 .m-h .mi { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--ember-soft); color: var(--ember-2); }
 .m-h .mi.good { background: var(--good-soft); color: var(--good); }
 .m-h h2 { font-size: 17px; font-weight: 800; letter-spacing: -0.02em; }
-.m-b { padding: 16px 20px; color: var(--ink-2); line-height: 1.5; display: grid; gap: 12px; }
+.m-b { min-height: 0; overflow: auto; padding: 16px 20px; color: var(--ink-2); line-height: 1.5; display: grid; gap: 12px; }
 .m-f { padding: 12px 20px 18px; display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
 .sum3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .sum3 div { padding: 10px 12px; background: var(--surface-2); border-radius: 10px; display: grid; gap: 2px; }

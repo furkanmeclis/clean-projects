@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+### Fixed
+- Scrolling in the desktop app on macOS: the main area grew to its content height in WebKit, so long pages (Overview, Settings, Candidates) could not be scrolled. The layout now gives the content a fixed height, and the update and launch banners no longer push it out of view.
+- Long dialogs, the candidate detail panel and the navigation rail scroll when they do not fit; the candidate table scrolls sideways in narrow windows; the window no longer rubber-bands.
+- macOS installers: the DMG itself is now notarized and stapled, so Gatekeeper accepts it, and the app inside, without a network check.
+- `SHA256SUMS.txt` verifies the Windows archive (its checksum had a CRLF line ending).
+
 ## 0.3.0
 
 First release of the Rust CLI and the desktop app (v0.1.0 and v0.2.0 were the legacy Go CLI). It contains everything below; the 2.x headings are internal development milestones that were never published.

@@ -198,6 +198,24 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           includeUpdaterJson: ${{ steps.updater.outputs.json == 'true' }}
           args: ${{ matrix.args }} ${{ steps.updater.outputs.args }}
+      - name: Notarize and staple the DMG
+        # Tauri notarizes the .app inside the DMG but not the DMG itself, and its staple
+        # step can fail silently. Notarizing the DMG and stapling the ticket to it lets
+        # Gatekeeper accept the download and the app offline.
+        if: runner.os == 'macOS' && env.APPLE_API_KEY_PATH != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          for dmg in target/*/release/bundle/dmg/*.dmg; do
+            xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait --timeout 30m
+            for i in 1 2 3 4 5; do xcrun stapler staple "$dmg" && break; sleep 20; done
+            xcrun stapler validate "$dmg"
+            gh release upload "$TAG" "$dmg" --clobber --repo "$GITHUB_REPOSITORY"
+          done
 
   publish-cli:
     name: Attach CLI binaries
