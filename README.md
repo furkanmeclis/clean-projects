@@ -212,7 +212,7 @@ For the terminal binary:
 xattr -d com.apple.quarantine /usr/local/bin/cleanprojects
 ```
 
-Maintainers: to produce signed builds, add `APPLE_CERTIFICATE` (base64 `.p12`), `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` (app-specific password) and `APPLE_TEAM_ID` as repository secrets. The release workflow imports the certificate and lets Tauri sign and notarize the `.dmg`. In-app updates additionally need `TAURI_SIGNING_PRIVATE_KEY` (and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if set); the matching public key is in `apps/desktop/src-tauri/tauri.conf.json`. Without that secret the app still builds, just without `latest.json`.
+Maintainers: to produce signed builds, add `APPLE_CERTIFICATE` (base64 `.p12`), `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_SIGNING_IDENTITY` and `APPLE_TEAM_ID` as repository secrets, plus one of the two notarization options: `APPLE_ID` + `APPLE_PASSWORD` (app-specific password), or an App Store Connect API key as `APPLE_API_ISSUER`, `APPLE_API_KEY` and `APPLE_API_KEY_P8` (the `.p8` file contents). The release workflow imports the certificate and lets Tauri sign and notarize the `.dmg`. In-app updates additionally need `TAURI_SIGNING_PRIVATE_KEY` (and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if set); the matching public key is in `apps/desktop/src-tauri/tauri.conf.json`. Without that secret the app still builds, just without `latest.json`.
 
 ## Using the desktop app
 
