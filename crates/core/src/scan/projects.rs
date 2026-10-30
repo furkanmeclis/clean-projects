@@ -527,11 +527,20 @@ pub fn walk(opts: &WalkOptions, mut on_dir: impl FnMut(&Path)) -> (Vec<Project>,
     let mut hits = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let roots = dedupe_roots(opts.roots);
+    // Compare like with like: roots are canonical, so the guards must be too.
+    let protected: Vec<PathBuf> = opts.protected.iter().map(|p| canonical(p)).collect();
+    let skip: Vec<PathBuf> = opts.skip.iter().map(|p| canonical(p)).collect();
+    let opts = WalkOptions {
+        roots: opts.roots,
+        max_depth: opts.max_depth,
+        protected: &protected,
+        skip: &skip,
+    };
     for root in &roots {
         walk_dir(
             root,
             0,
-            opts,
+            &opts,
             &mut seen,
             &mut projects,
             &mut hits,
