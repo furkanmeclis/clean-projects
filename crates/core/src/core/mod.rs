@@ -8,6 +8,7 @@ pub mod fsutil;
 pub mod i18n;
 pub mod process;
 pub mod recovery;
+pub mod report;
 pub mod state;
 
 pub use candidate::{Action, Candidate, Category, Risk};

@@ -103,7 +103,8 @@ pub fn build_context(env: &Env, args: &ScanArgs) -> ScanContext {
     ctx.include_projects = !args.no_projects;
     ctx.include_tools = !args.no_tools;
     ctx.include_extras = !args.no_extras && !args.only_roots;
-    ctx
+    let cache = cleanprojects_core::load_cache(&env.paths.scan_cache_file);
+    ctx.with_previous(cache.as_ref())
 }
 
 /// The configured disposal mode, with CLI overrides.
@@ -187,6 +188,15 @@ pub fn run_scan_with(env: &Env, ctx: &ScanContext, quiet: bool, stream: bool) ->
     }
     let result = handle.join().expect("scan thread panicked");
     let _ = cleanprojects_core::save_cache(&env.paths.scan_cache_file, &result);
+    if let Ok(mut st) = env.paths.load_state() {
+        st.record_scan(
+            result.total(),
+            result.disk.free,
+            result.disk.total,
+            result.candidates.len(),
+        );
+        let _ = env.paths.save_state(&st);
+    }
     result
 }
 
@@ -279,6 +289,9 @@ pub fn print_table(env: &Env, items: &[&Candidate]) {
         if let Some(app) = &c.blocked_by {
             label.push_str(&format!(" ⛔{app}"));
         }
+        if c.tags.iter().any(|t| t == "new") {
+            label.push_str(" ✦");
+        }
         out!(
             "{}  {:<14}  {}  {:>9}  {:<30}  {}",
             env.dim(&c.id),
@@ -349,37 +362,23 @@ pub fn cmd_scan(env: &Env, cmd: &ScanCmd) -> Result<()> {
         }
     }
     if let Some(path) = &cmd.report {
-        std::fs::write(path, markdown_report(env, &result, &items))?;
-        eprintln!("report written to {}", path.display());
+        let format = cleanprojects_core::ReportFormat::from_path(path);
+        std::fs::write(
+            path,
+            cleanprojects_core::report::render(&result, &items, &env.paths.home, format),
+        )?;
+        eprintln!("report written to {} ({:?})", path.display(), format);
     }
     Ok(())
 }
 
 pub fn markdown_report(env: &Env, result: &ScanResult, items: &[&Candidate]) -> String {
-    let mut s = String::new();
-    s.push_str("# CleanProjects report\n\n");
-    s.push_str(&format!(
-        "Scanned {} · {} projects · {} repositories · disk {} free of {}\n\n",
-        result.started_at.format("%Y-%m-%d %H:%M"),
-        result.projects,
-        result.repos,
-        human_size(result.disk.free),
-        human_size(result.disk.total)
-    ));
-    s.push_str("| Size | Risk | Category | Item | Path / command |\n|---:|---|---|---|---|\n");
-    for c in items {
-        s.push_str(&format!(
-            "| {} | {} | {} | {} | `{}` |\n",
-            human_size(c.size),
-            c.risk.as_str(),
-            c.category.as_str(),
-            c.label.replace('|', "\\|"),
-            compact_path(std::path::Path::new(&c.detail()), &env.paths.home)
-        ));
-    }
-    let total: u64 = items.iter().map(|c| c.size).sum();
-    s.push_str(&format!("\n**Total recoverable: {}**\n", human_size(total)));
-    s
+    cleanprojects_core::report::render(
+        result,
+        items,
+        &env.paths.home,
+        cleanprojects_core::ReportFormat::Markdown,
+    )
 }
 
 pub fn cmd_clean(env: &mut Env, cmd: &CleanCmd) -> Result<()> {
@@ -547,6 +546,7 @@ pub fn cmd_history(env: &Env, json: bool, limit: usize) -> Result<()> {
     }
     if entries.is_empty() {
         out!("No cleanups yet.");
+        print_trend(env);
         return Ok(());
     }
     for e in entries {
@@ -578,6 +578,109 @@ pub fn cmd_history(env: &Env, json: bool, limit: usize) -> Result<()> {
     out!(
         "\nTotal freed over time: {}",
         env.orange(&human_size(env.state.total_freed()))
+    );
+    print_trend(env);
+    Ok(())
+}
+
+/// Recoverable / free space over the last scans as a compact sparkline.
+pub fn print_trend(env: &Env) {
+    let scans = &env.state.scans;
+    if scans.len() < 2 {
+        return;
+    }
+    let bars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let spark = |vals: Vec<u64>| -> String {
+        let max = vals.iter().copied().max().unwrap_or(1).max(1);
+        vals.iter()
+            .map(|v| bars[((*v as f64 / max as f64) * 7.0).round() as usize])
+            .collect()
+    };
+    let recent: Vec<_> = scans
+        .iter()
+        .rev()
+        .take(30)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let first = recent.first().unwrap();
+    let last = recent.last().unwrap();
+    out!(
+        "\n{} {}  {} → {}  ({} scans since {})",
+        env.bold("recoverable"),
+        env.orange(&spark(recent.iter().map(|s| s.recoverable).collect())),
+        human_size(first.recoverable),
+        human_size(last.recoverable),
+        recent.len(),
+        first.at.format("%Y-%m-%d")
+    );
+    out!(
+        "{} {}  {} → {}",
+        env.bold("free space "),
+        env.green(&spark(recent.iter().map(|s| s.free).collect())),
+        human_size(first.free),
+        human_size(last.free)
+    );
+}
+
+pub fn cmd_large(
+    env: &Env,
+    path: Option<PathBuf>,
+    min_mb: u64,
+    top: usize,
+    json: bool,
+) -> Result<()> {
+    let ctx = ScanContext::new(env.paths.home.clone(), env.config.clone());
+    let roots = match path {
+        Some(p) => vec![p],
+        None => {
+            let mut r = vec![env.paths.home.clone()];
+            r.extend(
+                ctx.roots
+                    .iter()
+                    .filter(|p| !p.starts_with(&env.paths.home))
+                    .cloned(),
+            );
+            r
+        }
+    };
+    let files = cleanprojects_core::large_files(&roots, min_mb * 1024 * 1024, top, &ctx.protected);
+    if json {
+        out!("{}", serde_json::to_string_pretty(&files)?);
+        return Ok(());
+    }
+    if files.is_empty() {
+        out!(
+            "No files of {min_mb} MB or more under {}.",
+            roots
+                .iter()
+                .map(|r| compact_path(r, &env.paths.home))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return Ok(());
+    }
+    let width = terminal_width().clamp(60, 160);
+    for f in &files {
+        out!(
+            "{:>9}  {}  {}",
+            env.orange(&human_size(f.size)),
+            env.dim(
+                &f.modified
+                    .map(|m| m.format("%Y-%m-%d").to_string())
+                    .unwrap_or_else(|| "          ".into())
+            ),
+            ellipsize_middle(
+                &compact_path(&f.path, &env.paths.home),
+                width.saturating_sub(24)
+            )
+        );
+    }
+    out!(
+        "\n{} files · {}",
+        files.len(),
+        env.orange(&human_size(files.iter().map(|f| f.size).sum()))
     );
     Ok(())
 }

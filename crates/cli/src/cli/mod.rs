@@ -103,6 +103,17 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Find the largest files under your home (or a directory), skipping protected locations.
+    Large {
+        path: Option<PathBuf>,
+        /// Minimum file size in MB.
+        #[arg(long, default_value_t = 256)]
+        min_size: u64,
+        #[arg(long, default_value_t = 40)]
+        top: usize,
+        #[arg(long)]
+        json: bool,
+    },
     /// Print or install the agent skill (Claude Code, Codex, Cursor) describing how to drive this CLI.
     Skill {
         /// Write the skill into ~/.claude/skills/cleanprojects/SKILL.md.
@@ -196,7 +207,7 @@ pub struct ScanCmd {
     /// Print one JSON object per line as candidates are found.
     #[arg(long, conflicts_with = "json")]
     pub json_stream: bool,
-    /// Write a Markdown report to this file.
+    /// Write a report to this file; the extension picks the format (.md, .json, .csv).
     #[arg(long, value_name = "FILE")]
     pub report: Option<PathBuf>,
 }

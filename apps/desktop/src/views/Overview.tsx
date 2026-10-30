@@ -1,5 +1,5 @@
-import { Archive, Boxes, Flame, FolderSearch, HardDrive, Hourglass, Layers, Lock, PieChart, ShieldCheck, Sparkles, Usb, Wand2, Wifi, Wrench, Zap } from "lucide-react";
-import type { Bootstrap, Candidate, Category, DiskInfo, RecoverySummary, Volume } from "../types";
+import { Archive, Boxes, Flame, FolderSearch, HardDrive, Hourglass, Layers, Lock, PieChart, ShieldCheck, Sparkles, TrendingUp, Usb, Wand2, Wifi, Wrench, Zap } from "lucide-react";
+import type { Bootstrap, Candidate, Category, DiskInfo, RecoverySummary, ScanSnapshot, Volume } from "../types";
 import { CATEGORIES, actionDisplay } from "../types";
 import { compactPath, humanSize, pct } from "../format";
 import type { Lang } from "../i18n";
@@ -16,6 +16,7 @@ interface Props {
   volumes: Volume[];
   recovery: RecoverySummary;
   guarded: number;
+  scans: ScanSnapshot[];
   onPick: (c: Candidate) => void;
   onPreset: (ids: string[]) => void;
   onExplore: (path: string) => void;
@@ -49,7 +50,42 @@ function Ring({ disk, recoverable, selected }: { disk: DiskInfo; recoverable: nu
   );
 }
 
-export function Overview({ lang, boot, disk, candidates, excluded, selected, volumes, recovery, guarded, onPick, onPreset, onExplore }: Props) {
+function Trend({ scans, lang, tip }: { scans: ScanSnapshot[]; lang: Lang; tip: ReturnType<typeof useTooltip> }) {
+  const s = STRINGS[lang];
+  if (scans.length < 2) return <div className="help" style={{ color: "var(--ink-3)", padding: "18px 0" }}>{s.trendEmpty}</div>;
+  const W = 600, H = 120, pad = 10;
+  const pts = scans.slice(-60);
+  const maxR = Math.max(...pts.map((p) => p.recoverable), 1);
+  const maxF = Math.max(...pts.map((p) => p.free), 1);
+  const x = (i: number) => pad + (i * (W - pad * 2)) / Math.max(1, pts.length - 1);
+  const yR = (v: number) => H - pad - (v / maxR) * (H - pad * 2);
+  const yF = (v: number) => H - pad - (v / maxF) * (H - pad * 2);
+  const line = (f: (v: number) => number, key: "recoverable" | "free") => pts.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${f(p[key]).toFixed(1)}`).join(" ");
+  const last = pts[pts.length - 1];
+  return (
+    <>
+      <svg className="trend" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label={s.trend} onMouseLeave={tip.hide}>
+        <defs><linearGradient id="tg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="var(--ember)" stopOpacity=".3" /><stop offset="1" stopColor="var(--ember)" stopOpacity="0" /></linearGradient></defs>
+        {[0.25, 0.5, 0.75].map((f) => <line key={f} x1={pad} x2={W - pad} y1={H - pad - f * (H - pad * 2)} y2={H - pad - f * (H - pad * 2)} stroke="var(--line)" />)}
+        <path d={`${line(yR, "recoverable")} L${x(pts.length - 1).toFixed(1)},${H - pad} L${pad},${H - pad} Z`} fill="url(#tg)" />
+        <path d={line(yF, "free")} fill="none" stroke="var(--cat-ide)" strokeWidth="2" strokeDasharray="4 4" strokeLinejoin="round" />
+        <path d={line(yR, "recoverable")} fill="none" stroke="var(--ember)" strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" />
+        {pts.map((p, i) => (
+          <rect key={i} x={x(i) - (W - pad * 2) / Math.max(1, pts.length - 1) / 2} y="0" width={(W - pad * 2) / Math.max(1, pts.length - 1)} height={H} fill="transparent"
+            onMouseEnter={(e) => tip.show(e, <span>{new Date(p.at).toLocaleDateString()} · {s.trendRecoverable} <b>{humanSize(p.recoverable)}</b> · {s.trendFree} <b>{humanSize(p.free)}</b> · {p.candidates} {s.items}</span>)} onMouseMove={tip.move} />
+        ))}
+        <circle cx={x(pts.length - 1)} cy={yR(last.recoverable)} r="4.5" fill="var(--ember)" stroke="var(--surface)" strokeWidth="2" />
+      </svg>
+      <div className="trend-legend">
+        <span><i style={{ background: "var(--ember)" }} />{s.trendRecoverable} · <b className="num">{humanSize(last.recoverable)}</b></span>
+        <span><i style={{ background: "var(--cat-ide)" }} />{s.trendFree} · <b className="num">{humanSize(last.free)}</b></span>
+        <span style={{ color: "var(--ink-3)" }}>{pts.length} {lang === "tr" ? "tarama" : "scans"}</span>
+      </div>
+    </>
+  );
+}
+
+export function Overview({ lang, boot, disk, candidates, excluded, selected, volumes, recovery, guarded, scans, onPick, onPreset, onExplore }: Props) {
   const s = STRINGS[lang];
   const tip = useTooltip();
   const active = candidates.filter((c) => !excluded.has(c.id));
@@ -147,7 +183,10 @@ export function Overview({ lang, boot, disk, candidates, excluded, selected, vol
         </Panel>
       </div>
 
-      <div className="ov-low">
+      <div className="ov-mid">
+        <Panel icon={<TrendingUp size={14} />} title={s.trend}>
+          <Trend scans={scans} lang={lang} tip={tip} />
+        </Panel>
         <Panel icon={<HardDrive size={14} />} title={s.volumes} sub={<span>{volumes.filter((v) => v.kind === "external").length} {s.external}</span>}>
           <div className="vol-list">
             {volumes.map((v) => {
@@ -163,6 +202,9 @@ export function Overview({ lang, boot, disk, candidates, excluded, selected, vol
             })}
           </div>
         </Panel>
+      </div>
+
+      <div className="ov-low" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
         <Panel icon={<Lock size={14} />} title={s.protectedTitle} sub={s.protectedHint}>
           <div className="chips">{boot.protected.map((p) => <span className="chip" key={p}><Lock size={11} />{p}</span>)}</div>
         </Panel>

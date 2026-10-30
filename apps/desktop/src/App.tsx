@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpCircle, CircleCheckBig, FileDown, Flame, GitBranch, Github, History as HistoryIcon, Keyboard, LayoutDashboard, LayoutGrid, ListChecks, Loader2, RefreshCw, Settings as SettingsIcon, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowUpCircle, ChevronDown, CircleCheckBig, Command, FileDown, FileJson, FileSpreadsheet, FileText, Flame, GitBranch, Github, History as HistoryIcon, Keyboard, LayoutDashboard, LayoutGrid, ListChecks, Loader2, Moon, RefreshCw, Settings as SettingsIcon, ShieldCheck, Sparkles, Sun, SunMoon, Trash2, X, Zap } from "lucide-react";
+import { CommandPalette, type PaletteAction } from "./components/CommandPalette";
 import { getApi, type Api, type CleanItem, type CleanStart, type ScanProgress, type UpdateInfo } from "./api";
-import type { Bootstrap, Candidate, CleanDone, CleanMode, Config, DiskInfo, HistoryEntry, RecoverySummary, ScanSummary, Volume } from "./types";
+import type { Bootstrap, Candidate, CleanDone, CleanMode, Config, DiskInfo, HistoryEntry, RecoverySummary, ScanSnapshot, ScanSummary, Volume } from "./types";
 import { Explore } from "./views/Explore";
 import { humanSize } from "./format";
 import { STRINGS, type Lang } from "./i18n";
@@ -38,6 +39,9 @@ export default function App() {
   const [cached, setCached] = useState(false);
   const [exploreStart, setExploreStart] = useState<string | null>(null);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [scans, setScans] = useState<ScanSnapshot[]>([]);
+  const [palette, setPalette] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [dryRun, setDryRun] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [showKeys, setShowKeys] = useState(false);
@@ -46,6 +50,12 @@ export default function App() {
 
   const lang: Lang = config?.ui.language ?? "en";
   const s = STRINGS[lang];
+  const theme = config?.ui.theme ?? "system";
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "system") delete root.dataset.theme;
+    else root.dataset.theme = theme;
+  }, [theme]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -70,6 +80,7 @@ export default function App() {
       setRecovery(b.recovery);
       setGuarded(b.guarded);
       setCached(b.cached);
+      setScans(b.scans);
       setCandidates(b.candidates);
       setHasScanned(b.candidates.length > 0);
       setScanning(b.scanning);
@@ -88,6 +99,7 @@ export default function App() {
         setGuarded(sum.guarded);
         setCached(false);
         setHasScanned(true);
+        api.bootstrap().then((nb) => setScans(nb.scans)).catch(() => {});
         if (sum.background) {
           api.bootstrap().then((nb) => { setCandidates(nb.candidates); setSelected(new Set()); }).catch(() => {});
           setToast(`${STRINGS[lang].backgroundScan}: ${humanSize(sum.total)}`);
@@ -106,6 +118,9 @@ export default function App() {
       unsubs.push(await api.on<CleanItem>("clean://item", (it) => {
         logRef.current = [...logRef.current, it.ok ? { text: `  ✓ ${humanSize(it.freed)}`, tone: "ok" } : { text: `  ✗ ${it.error ?? "failed"}`, tone: "fail" }];
         setModal({ kind: "running", ...cleanRef.current, log: logRef.current });
+      }));
+      unsubs.push(await api.on<void>("candidates://changed", () => {
+        api.bootstrap().then((nb) => { setCandidates(nb.candidates); setConfig(nb.config); }).catch(() => {});
       }));
       unsubs.push(await api.on<CleanDone>("clean://done", (done) => {
         setModal({ kind: "done", entry: done.entry, log: logRef.current });
@@ -253,15 +268,35 @@ export default function App() {
     showToast(STRINGS[saved.ui.language].settingsSaved);
   }, [showToast]);
 
-  const exportReport = useCallback(async () => {
+  const exportReport = useCallback(async (format: "md" | "json" | "csv" = "md") => {
     const api = apiRef.current;
     if (!api) return;
-    const path = await api.saveDialog(`cleanprojects-report-${new Date().toISOString().slice(0, 10)}.md`);
+    setExportOpen(false);
+    const path = await api.saveDialog(`cleanprojects-report-${new Date().toISOString().slice(0, 10)}.${format}`);
     if (!path) return;
     const ids = selected.size ? [...selected] : [];
-    await api.writeReport(path, ids);
+    await api.writeReport(path, ids, format);
     showToast(`${s.exportReport}: ${path}`);
   }, [selected, s, showToast]);
+
+  const protectPath = useCallback(async (path: string) => {
+    const api = apiRef.current;
+    if (!api || !path) return;
+    try {
+      const cfg = await api.protectPath(path);
+      setConfig(cfg);
+      setCandidates((cs) => cs.filter((c) => !(c.action.type === "remove-path" && c.action.path.startsWith(path))));
+      setSelected((sel) => new Set([...sel].filter((id) => candidates.find((c) => c.id === id)?.action.type !== "remove-path" || !(candidates.find((c) => c.id === id)!.action as { path: string }).path.startsWith(path))));
+      showToast(`${s.protected}: ${path}`);
+    } catch (e) {
+      showToast(String(e));
+    }
+  }, [candidates, s, showToast]);
+
+  const setTheme = useCallback(async (t: "system" | "light" | "dark") => {
+    if (!config) return;
+    await saveConfig({ ...config, ui: { ...config.ui, theme: t } });
+  }, [config, saveConfig]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -269,6 +304,8 @@ export default function App() {
       const t = e.target as HTMLElement;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "r") { e.preventDefault(); startScan(); }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette((v) => !v); return; }
+      if (palette) return;
       if (e.key === "1") setTab("overview");
       if (e.key === "2") setTab("candidates");
       if (e.key === "3") setTab("git");
@@ -281,7 +318,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [modal, startScan, tab]);
+  }, [modal, startScan, tab, palette]);
 
   if (!boot || !config) {
     return <div className="shell" style={{ placeItems: "center", display: "grid" }}><Loader2 className="spin" size={28} style={{ color: "var(--ember)" }} /></div>;
@@ -298,7 +335,29 @@ export default function App() {
     { id: "settings", label: s.settings, icon: <SettingsIcon size={19} /> },
   ];
 
+  const lowIds = candidates.filter((c) => c.risk === "low" && !excluded.has(c.id)).map((c) => c.id);
+  const paletteActions: PaletteAction[] = [
+    { id: "rescan", label: s.rescan, hint: "⌘R", icon: <RefreshCw size={14} />, run: () => startScan() },
+    { id: "safe", label: lang === "tr" ? "Güvenli süpürme seç" : "Select safe sweep", hint: `${lowIds.length} ${s.items}`, icon: <Zap size={14} />, run: () => selectMany(lowIds, true) },
+    { id: "clean", label: s.clean, hint: selected.size ? humanSize(selectedSize) : s.noneSelected, icon: <Trash2 size={14} />, run: () => { if (selected.size) { setModal({ kind: "confirm" }); setDryRun(false); } } },
+    { id: "clear", label: s.clearSelection, icon: <X size={14} />, run: () => selectMany([...selected], false) },
+    { id: "overview", label: s.overview, hint: "1", icon: <LayoutDashboard size={14} />, run: () => setTab("overview") },
+    { id: "candidates", label: s.candidates, hint: "2", icon: <ListChecks size={14} />, run: () => setTab("candidates") },
+    { id: "git", label: s.git, hint: "3", icon: <GitBranch size={14} />, run: () => setTab("git") },
+    { id: "explore", label: s.explore, hint: "4", icon: <LayoutGrid size={14} />, run: () => setTab("explore") },
+    { id: "history", label: s.history, hint: "5", icon: <HistoryIcon size={14} />, run: () => setTab("history") },
+    { id: "settings", label: s.settings, hint: "6", icon: <SettingsIcon size={14} />, run: () => setTab("settings") },
+    { id: "export-md", label: `${s.exportAs} Markdown`, icon: <FileText size={14} />, run: () => exportReport("md") },
+    { id: "export-json", label: `${s.exportAs} JSON`, icon: <FileJson size={14} />, run: () => exportReport("json") },
+    { id: "export-csv", label: `${s.exportAs} CSV`, icon: <FileSpreadsheet size={14} />, run: () => exportReport("csv") },
+    { id: "theme-system", label: `${s.theme}: ${s.themeSystem}`, icon: <SunMoon size={14} />, run: () => setTheme("system") },
+    { id: "theme-light", label: `${s.theme}: ${s.themeLight}`, icon: <Sun size={14} />, run: () => setTheme("light") },
+    { id: "theme-dark", label: `${s.theme}: ${s.themeDark}`, icon: <Moon size={14} />, run: () => setTheme("dark") },
+    { id: "keys", label: lang === "tr" ? "Klavye kısayolları" : "Keyboard shortcuts", hint: "?", icon: <Keyboard size={14} />, run: () => setShowKeys(true) },
+  ];
+
   const shortcuts: Array<[string, string]> = [
+    ["⌘/Ctrl K", s.palette],
     ["1 … 6", lang === "tr" ? "görünüm değiştir" : "switch view"],
     ["⌘/Ctrl R", s.rescan],
     ["/", lang === "tr" ? "ara" : "search"],
@@ -318,6 +377,8 @@ export default function App() {
         ))}
         <span className="rail-spacer" />
         <div className="rail-foot">
+          <button type="button" className="ib" title={`${s.palette} (⌘K)`} onClick={() => setPalette(true)}><Command size={16} /></button>
+          <button type="button" className="ib" title={s.theme} onClick={() => setTheme(theme === "system" ? "light" : theme === "light" ? "dark" : "system")}>{theme === "system" ? <SunMoon size={16} /> : theme === "light" ? <Sun size={16} /> : <Moon size={16} />}</button>
           <button type="button" className="ib" title={lang === "tr" ? "Klavye kısayolları" : "Keyboard shortcuts"} onClick={() => setShowKeys(true)}><Keyboard size={16} /></button>
           <a className="ib" href="https://github.com/furkanmeclis/clean-projects" target="_blank" rel="noreferrer" title="GitHub"><Github size={16} /></a>
           <span className="ver">v{boot.version}</span>
@@ -338,16 +399,25 @@ export default function App() {
           {scanning && cached && <div className="scanline"><span>{s.cachedResult}</span></div>}
           {!scanning && lastScan && <div className="scanline ok"><CircleCheckBig size={13} /><span>{s.tabSummary} <b className="num">{lastScan.candidates}</b> {s.items} · <b className="num">{humanSize(lastScan.total)}</b> · {lastScan.projects} {s.projectsScanned} · {lastScan.repos} {s.reposScanned}{lastScan.guarded > 0 && <> · <ShieldCheck size={12} style={{ verticalAlign: -2 }} /> {lastScan.guarded} {s.guarded}</>} · {(lastScan.duration_ms / 1000).toFixed(1)}s</span></div>}
           <span className="spacer" />
-          <button type="button" className="btn icon quiet" onClick={exportReport} disabled={!hasScanned} title={s.exportReport}><FileDown size={16} /></button>
+          <div className="menu">
+            <button type="button" className="btn quiet" onClick={() => setExportOpen(!exportOpen)} disabled={!hasScanned} title={s.exportReport}><FileDown size={16} /><ChevronDown size={12} /></button>
+            {exportOpen && (
+              <div className="menu-list right" onMouseLeave={() => setExportOpen(false)}>
+                <button type="button" onClick={() => exportReport("md")}><FileText size={13} /> Markdown</button>
+                <button type="button" onClick={() => exportReport("json")}><FileJson size={13} /> JSON</button>
+                <button type="button" onClick={() => exportReport("csv")}><FileSpreadsheet size={13} /> CSV</button>
+              </div>
+            )}
+          </div>
           <button type="button" className="btn" onClick={() => startScan()} disabled={scanning}>{scanning ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />} {scanning ? s.scanning : hasScanned ? s.rescan : s.scan}</button>
           <button type="button" className="btn ember" disabled={selected.size === 0 || scanning} onClick={() => { setModal({ kind: "confirm" }); setDryRun(false); }} title={selected.size === 0 ? s.noneSelected : undefined}>
             <Trash2 size={15} /> {s.clean}{selected.size > 0 && <span className="num"> · {humanSize(selectedSize)}</span>}
           </button>
         </header>
         <section className="content">
-          {tab === "overview" && <Overview lang={lang} boot={boot} disk={disk} candidates={candidates} excluded={excluded} selected={selected} volumes={volumes} recovery={recovery} guarded={guarded} onPick={(c) => { setActiveId(c.id); setTab(c.category === "git" ? "git" : "candidates"); }} onPreset={(ids) => { selectMany(ids, true); showToast(`${ids.length} ${s.items} ✓`); }} onExplore={(p) => { setExploreStart(p); setTab("explore"); }} />}
-          {tab === "explore" && apiRef.current && <Explore key={exploreStart ?? "home"} lang={lang} api={apiRef.current} home={exploreStart ?? boot.home} volumes={volumes} onAdd={addManual} />}
-          {tab === "candidates" && <Candidates lang={lang} home={boot.home} candidates={candidates} excluded={excluded} selected={selected} activeId={activeId} onToggle={toggle} onSelectMany={selectMany} onActivate={setActiveId} onExclude={exclude} onReveal={reveal} hasScanned={hasScanned} scanning={scanning} />}
+          {tab === "overview" && <Overview lang={lang} boot={boot} disk={disk} candidates={candidates} excluded={excluded} selected={selected} volumes={volumes} recovery={recovery} guarded={guarded} scans={scans} onPick={(c) => { setActiveId(c.id); setTab(c.category === "git" ? "git" : "candidates"); }} onPreset={(ids) => { selectMany(ids, true); showToast(`${ids.length} ${s.items} ✓`); }} onExplore={(p) => { setExploreStart(p); setTab("explore"); }} />}
+          {tab === "explore" && apiRef.current && <Explore key={exploreStart ?? "home"} lang={lang} api={apiRef.current} home={exploreStart ?? boot.home} volumes={volumes} onAdd={addManual} onProtect={protectPath} onReveal={reveal} />}
+          {tab === "candidates" && <Candidates lang={lang} home={boot.home} candidates={candidates} excluded={excluded} selected={selected} activeId={activeId} onToggle={toggle} onSelectMany={selectMany} onActivate={setActiveId} onExclude={exclude} onReveal={reveal} onProtect={protectPath} hasScanned={hasScanned} scanning={scanning} />}
           {tab === "git" && <GitView lang={lang} home={boot.home} candidates={candidates} excluded={excluded} selected={selected} gitEnabled={config.git.enabled} onToggle={toggle} onActivate={(id) => { setActiveId(id); setTab("candidates"); }} />}
           {tab === "history" && <History lang={lang} home={boot.home} history={history} recovery={recovery} onClear={async () => { await apiRef.current?.clearHistory(); setHistory([]); }} onUndo={undoRun} onRestore={restoreEntry} onPurge={purgeRecovery} />}
           {tab === "settings" && <Settings lang={lang} config={config} configPath={boot.config_path} onSave={saveConfig} />}
@@ -355,6 +425,9 @@ export default function App() {
       </main>
       {modal && (
         <CleanModal lang={lang} items={selectedItems} phase={modal} mode={mode} dryRun={dryRun} force={force} onMode={setMode} onDryRun={setDryRun} onForce={setForce} onRun={runClean} onClose={() => { setModal(null); setForce(false); }} />
+      )}
+      {palette && (
+        <CommandPalette lang={lang} home={boot.home} actions={paletteActions} candidates={candidates.filter((c) => !excluded.has(c.id))} onPick={(c) => { setActiveId(c.id); setTab(c.category === "git" ? "git" : "candidates"); }} onClose={() => setPalette(false)} />
       )}
       {showKeys && (
         <div className="backdrop" onClick={() => setShowKeys(false)}>

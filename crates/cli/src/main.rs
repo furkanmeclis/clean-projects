@@ -39,6 +39,12 @@ fn run(cli: Cli) -> Result<()> {
         }
         Some(Command::Volumes { json }) => commands::cmd_volumes(&env, json),
         Some(Command::Explore { path, top, json }) => commands::cmd_explore(&env, path, top, json),
+        Some(Command::Large {
+            path,
+            min_size,
+            top,
+            json,
+        }) => commands::cmd_large(&env, path, min_size, top, json),
         Some(Command::Skill { install }) => commands::cmd_skill(&env, install),
         Some(Command::Completions { .. }) => unreachable!(),
     }

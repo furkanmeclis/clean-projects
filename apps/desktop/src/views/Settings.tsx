@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bell, FolderSearch, GitBranch, Globe, HardDrive, Monitor, Recycle, RotateCcw, Save, Settings2, ShieldAlert, Trash2 } from "lucide-react";
+import { Bell, FolderSearch, GitBranch, Globe, HardDrive, Monitor, Moon, Recycle, RotateCcw, Save, Settings2, ShieldAlert, Sun, SunMoon, Trash2 } from "lucide-react";
 import type { Config } from "../types";
 import type { Lang } from "../i18n";
 import { STRINGS } from "../i18n";
@@ -9,7 +9,7 @@ const DEFAULTS: Config = {
   scan: { roots: [], default_roots: true, max_depth: 6, min_size_mb: 1, stale_days: 30, protected: [], disabled_rules: [], volumes: true, skip_volumes: [], installer_days: 7 },
   git: { enabled: true, merged_branches: false, gc: true, worktree_idle_days: 7 },
   clean: { use_trash: true, mode: "recovery", recovery_days: 14, block_running_apps: true },
-  ui: { language: "en", close_to_tray: true, scan_interval_hours: 24, notify_threshold_gb: 5, check_updates: true },
+  ui: { language: "en", close_to_tray: true, scan_interval_hours: 24, notify_threshold_gb: 5, check_updates: true, theme: "system" },
 };
 
 export function Settings({ lang, config, configPath, onSave }: { lang: Lang; config: Config; configPath: string; onSave: (c: Config) => Promise<void> }) {
@@ -37,6 +37,16 @@ export function Settings({ lang, config, configPath, onSave }: { lang: Lang; con
           <div><label htmlFor="set-recdays">{s.recoveryDays}</label><input id="set-recdays" type="number" min={1} value={draft.clean.recovery_days} onChange={(e) => set("clean", { recovery_days: num(e.target.value, 1) })} /></div>
         </div>
         <div className="swrow"><Switch id="set-block" on={draft.clean.block_running_apps} onChange={(v) => set("clean", { block_running_apps: v })} /><label htmlFor="set-block">{s.blockRunning}</label></div>
+      </div>
+      <div className="panel field">
+        <label>{s.theme}</label>
+        <div className="seg" style={{ width: "fit-content" }}>
+          {(["system", "light", "dark"] as const).map((t) => (
+            <button type="button" key={t} className={draft.ui.theme === t ? "active" : ""} onClick={() => set("ui", { theme: t })}>
+              {t === "system" ? <SunMoon size={13} /> : t === "light" ? <Sun size={13} /> : <Moon size={13} />} {t === "system" ? s.themeSystem : t === "light" ? s.themeLight : s.themeDark}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="panel field">
         <label htmlFor="set-lang"><Globe size={13} style={{ verticalAlign: -2, marginRight: 6, color: "var(--ember)" }} />{s.language}</label>

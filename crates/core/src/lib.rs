@@ -12,8 +12,10 @@ pub use core::disk::{disk_for, volumes, DiskInfo, Volume, VolumeKind};
 pub use core::fsutil;
 pub use core::i18n::{Lang, Strings};
 pub use core::recovery::{self as recovery, Journal, RecoveryEntry};
+pub use core::report::{self as report, Format as ReportFormat};
+pub use core::state::ScanSnapshot;
 pub use core::state::{Config, HistoryEntry, HistoryItem, Paths, State};
-pub use scan::tree::{list_dir, tree, Node, TreeNode};
+pub use scan::tree::{large_files, list_dir, tree, Node, TreeNode};
 pub use scan::{load_cache, save_cache, scan, scan_blocking, ScanContext, ScanEvent, ScanResult};
 
 /// Crate version, shared by every front end.

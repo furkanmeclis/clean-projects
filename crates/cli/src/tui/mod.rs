@@ -236,6 +236,12 @@ impl App {
             }
             if let Some(r) = done {
                 let _ = cleanprojects_core::save_cache(&self.env.paths.scan_cache_file, &r);
+                self.env.state.record_scan(
+                    r.total(),
+                    r.disk.free,
+                    r.disk.total,
+                    r.candidates.len(),
+                );
                 self.cached = false;
                 self.guarded = r.guarded;
                 self.volumes = r.volumes.clone();

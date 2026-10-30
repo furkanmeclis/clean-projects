@@ -188,3 +188,28 @@ fn recovery_bin_roundtrip_and_volumes() {
         .success()
         .stdout(predicate::str::contains("\"category\":\"project\""));
 }
+
+#[test]
+fn large_files_and_csv_report() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    fixture(&home);
+    let cfg = tmp.path().join("cfg");
+    cmd(&cfg)
+        .arg("large")
+        .arg(&home)
+        .args(["--min-size", "1", "--top", "5"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("big.bin"));
+    let report = tmp.path().join("r.csv");
+    let mut c = cmd(&cfg);
+    c.args(["scan", "--only-roots", "--root"])
+        .arg(home.join("Projects"))
+        .args(["--no-tools", "--no-git", "--no-global", "--report"])
+        .arg(&report);
+    c.assert().success();
+    let text = std::fs::read_to_string(&report).unwrap();
+    assert!(text.starts_with("id,label,category"));
+    assert!(text.contains("node_modules"));
+}

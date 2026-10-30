@@ -42,6 +42,8 @@ pub struct ScanContext {
     pub include_projects: bool,
     pub include_global: bool,
     pub include_extras: bool,
+    /// Candidate ids of the previous scan; anything not in here is tagged `new`.
+    pub previous: HashSet<String>,
 }
 
 impl ScanContext {
@@ -84,6 +86,7 @@ impl ScanContext {
             include_projects: true,
             include_global: true,
             include_extras: true,
+            previous: HashSet::new(),
             home,
             config,
             protected,
@@ -95,6 +98,14 @@ impl ScanContext {
 
     pub fn min_size(&self) -> u64 {
         self.config.scan.min_size_mb * 1024 * 1024
+    }
+
+    /// Remember the previous scan so new candidates can be highlighted.
+    pub fn with_previous(mut self, cache: Option<&ScanResult>) -> Self {
+        if let Some(c) = cache {
+            self.previous = c.candidates.iter().map(|c| c.id.clone()).collect();
+        }
+        self
     }
 
     fn volume_name(&self, path: &Path) -> Option<String> {
@@ -186,6 +197,9 @@ pub fn scan(ctx: &ScanContext, tx: Sender<ScanEvent>) -> ScanResult {
             if let Some(p) = c.action.path() {
                 c.volume = ctx.volume_name(p);
             }
+        }
+        if !ctx.previous.is_empty() && !ctx.previous.contains(&c.id) {
+            c.tags.push("new".into());
         }
         if c.size >= min_size || !c.size_exact || c.action.is_git() {
             let _ = tx.send(ScanEvent::Found(Box::new(c.clone())));
@@ -424,6 +438,29 @@ mod tests {
         save_cache(&cache, &res).unwrap();
         let back = load_cache(&cache).unwrap();
         assert_eq!(back.candidates.len(), 1);
+        let ctx2 = ScanContext {
+            include_global: false,
+            include_tools: false,
+            include_git: false,
+            include_extras: false,
+            ..ScanContext::new(home.clone(), Config::default())
+        }
+        .with_previous(Some(&back));
+        fs::create_dir_all(proj.join(".next")).unwrap();
+        fs::write(proj.join(".next/x.bin"), vec![1u8; 2 * 1024 * 1024]).unwrap();
+        let res2 = scan_blocking(&ctx2);
+        let next = res2
+            .candidates
+            .iter()
+            .find(|c| c.label.ends_with(".next"))
+            .unwrap();
+        assert!(next.tags.contains(&"new".to_string()));
+        let nm = res2
+            .candidates
+            .iter()
+            .find(|c| c.label.ends_with("node_modules"))
+            .unwrap();
+        assert!(!nm.tags.contains(&"new".to_string()));
         fs::remove_dir_all(proj.join("node_modules")).unwrap();
         assert_eq!(load_cache(&cache).unwrap().candidates.len(), 0);
     }

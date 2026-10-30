@@ -116,7 +116,15 @@ export interface Config {
     worktree_idle_days: number;
   };
   clean: { use_trash: boolean; mode: CleanMode; recovery_days: number; block_running_apps: boolean };
-  ui: { language: "en" | "tr"; close_to_tray: boolean; scan_interval_hours: number; notify_threshold_gb: number; check_updates: boolean };
+  ui: { language: "en" | "tr"; close_to_tray: boolean; scan_interval_hours: number; notify_threshold_gb: number; check_updates: boolean; theme: "system" | "light" | "dark" };
+}
+
+export interface ScanSnapshot {
+  at: string;
+  recoverable: number;
+  free: number;
+  total: number;
+  candidates: number;
 }
 
 export interface HistoryItem {
@@ -157,6 +165,7 @@ export interface Bootstrap {
   guarded: number;
   scanning: boolean;
   recovery: RecoverySummary;
+  scans: ScanSnapshot[];
 }
 
 export interface ScanSummary {

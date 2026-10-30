@@ -13,6 +13,7 @@ use cleanprojects_core::cleaner::{self, CleanEvent, CleanMode, CleanOptions};
 use cleanprojects_core::fsutil::{compact_path, human_size};
 use cleanprojects_core::recovery;
 use cleanprojects_core::scan::{self, ScanContext, ScanEvent, ScanResult};
+use cleanprojects_core::ScanSnapshot;
 use cleanprojects_core::{
     disk_for, volumes, Candidate, Config, DiskInfo, HistoryEntry, Journal, Node, Paths, State,
     TreeNode, Volume,
@@ -53,6 +54,7 @@ struct Bootstrap {
     guarded: usize,
     scanning: bool,
     recovery: RecoverySummary,
+    scans: Vec<ScanSnapshot>,
 }
 
 #[derive(Serialize, Clone)]
@@ -204,6 +206,7 @@ fn bootstrap(st: TauriState<AppState>) -> CmdResult<Bootstrap> {
         guarded,
         scanning: st.scanning.load(Ordering::SeqCst),
         recovery: recovery_summary(&st.paths),
+        scans: state.scans,
     })
 }
 
@@ -248,8 +251,12 @@ fn run_scan_thread(app: AppHandle, ctx: ScanContext, background: bool) {
         };
         {
             let mut s = st.state.lock().unwrap();
-            s.last_scan_at = Some(result.started_at);
-            s.last_recoverable = total;
+            s.record_scan(
+                total,
+                result.disk.free,
+                result.disk.total,
+                result.candidates.len(),
+            );
             let _ = st.paths.save_state(&s);
         }
         *st.last_scan.lock().unwrap() = Some(result);
@@ -292,6 +299,8 @@ fn start_scan(
     ctx.include_projects = !options.no_projects;
     ctx.include_global = !options.no_global;
     ctx.include_extras = !options.no_extras;
+    let previous = st.last_scan.lock().unwrap().clone();
+    let ctx = ctx.with_previous(previous.as_ref());
     run_scan_thread(app, ctx, options.background);
     Ok(())
 }
@@ -597,7 +606,12 @@ fn add_manual_candidate(st: TauriState<AppState>, path: String) -> CmdResult<Can
 }
 
 #[tauri::command]
-fn write_report(st: TauriState<AppState>, path: String, ids: Vec<String>) -> CmdResult<String> {
+fn write_report(
+    st: TauriState<AppState>,
+    path: String,
+    ids: Vec<String>,
+    format: Option<String>,
+) -> CmdResult<String> {
     let wanted: HashSet<String> = ids.into_iter().collect();
     let scan = st.last_scan.lock().unwrap();
     let Some(result) = scan.as_ref() else {
@@ -608,34 +622,78 @@ fn write_report(st: TauriState<AppState>, path: String, ids: Vec<String>) -> Cmd
         .iter()
         .filter(|c| wanted.is_empty() || wanted.contains(&c.id))
         .collect();
-    let mut s = String::new();
-    s.push_str("# CleanProjects report\n\n");
-    s.push_str(&format!(
-        "Scanned {} · {} projects · {} repositories · disk {} free of {}\n\n",
-        result.started_at.format("%Y-%m-%d %H:%M"),
-        result.projects,
-        result.repos,
-        human_size(result.disk.free),
-        human_size(result.disk.total)
-    ));
-    s.push_str(
-        "| Size | Risk | Category | Owner | Item | Path / command |\n|---:|---|---|---|---|---|\n",
-    );
-    for c in &items {
-        s.push_str(&format!(
-            "| {} | {} | {} | {} | {} | `{}` |\n",
-            human_size(c.size),
-            c.risk.as_str(),
-            c.category.as_str(),
-            c.owner_or_label(),
-            c.label.replace('|', "\\|"),
-            compact_path(std::path::Path::new(&c.detail()), &st.paths.home)
-        ));
-    }
-    let total: u64 = items.iter().map(|c| c.size).sum();
-    s.push_str(&format!("\n**Total recoverable: {}**\n", human_size(total)));
-    std::fs::write(&path, s).map_err(err)?;
+    let fmt = format
+        .map(|f| cleanprojects_core::ReportFormat::parse(&f))
+        .unwrap_or_else(|| {
+            cleanprojects_core::ReportFormat::from_path(std::path::Path::new(&path))
+        });
+    std::fs::write(
+        &path,
+        cleanprojects_core::report::render(result, &items, &st.paths.home, fmt),
+    )
+    .map_err(err)?;
     Ok(path)
+}
+
+#[tauri::command]
+async fn large_files(
+    st: TauriState<'_, AppState>,
+    path: Option<String>,
+    min_mb: Option<u64>,
+    top: Option<usize>,
+) -> CmdResult<Vec<Node>> {
+    let config = st.config.lock().unwrap().clone();
+    let ctx = ScanContext::new(st.paths.home.clone(), config);
+    let roots = match path {
+        Some(p) => vec![PathBuf::from(p)],
+        None => {
+            let mut r = vec![st.paths.home.clone()];
+            r.extend(
+                ctx.roots
+                    .iter()
+                    .filter(|p| !p.starts_with(&st.paths.home))
+                    .cloned(),
+            );
+            r
+        }
+    };
+    let protected = ctx.protected.clone();
+    let min = min_mb.unwrap_or(256) * 1024 * 1024;
+    let top = top.unwrap_or(60).clamp(5, 500);
+    Ok(tauri::async_runtime::spawn_blocking(move || {
+        cleanprojects_core::large_files(&roots, min, top, &protected)
+    })
+    .await
+    .unwrap_or_default())
+}
+
+/// Add a path to the protected list and drop any candidates inside it.
+#[tauri::command]
+fn protect_path(app: AppHandle, st: TauriState<AppState>, path: String) -> CmdResult<Config> {
+    let p = PathBuf::from(&path);
+    let shown = compact_path(&p, &st.paths.home);
+    let mut config = st.config.lock().unwrap().clone();
+    if !config
+        .scan
+        .protected
+        .iter()
+        .any(|x| x == &shown || x == &path)
+    {
+        config.scan.protected.push(shown);
+    }
+    st.paths.save_config(&config).map_err(err)?;
+    *st.config.lock().unwrap() = config.clone();
+    if let Some(scan) = st.last_scan.lock().unwrap().as_mut() {
+        scan.candidates.retain(|c| {
+            c.action
+                .path()
+                .map(|cp| !cp.starts_with(&p))
+                .unwrap_or(true)
+        });
+        let _ = cleanprojects_core::save_cache(&st.paths.scan_cache_file, scan);
+    }
+    let _ = app.emit("candidates://changed", ());
+    Ok(config)
 }
 
 #[tauri::command]
@@ -804,6 +862,8 @@ pub fn run() {
             explore_tree,
             add_manual_candidate,
             write_report,
+            large_files,
+            protect_path,
             path_exists,
             quit_app
         ])

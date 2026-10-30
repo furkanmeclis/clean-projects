@@ -17,7 +17,7 @@
 
 It scans package manager stores, compiler caches, build output inside your projects, IDE and browser caches, container engines and git repositories, then shows everything as a reviewable list with a size, a risk level and an explanation. Nothing is deleted until you select it and confirm.
 
-Version 2 is a complete rewrite in Rust. One engine, three front ends. Version 2.1 adds an **undoable recovery bin**, **every mounted disk** (external SSDs included), a **treemap explorer**, a **menu bar watcher** with scheduled scans, git-tracked and running-app guards, and in-app updates.
+Version 2 is a complete rewrite in Rust. One engine, three front ends. Version 2.1 added an **undoable recovery bin**, **every mounted disk** (external SSDs included), a **treemap explorer**, a **menu bar watcher** with scheduled scans, git-tracked and running-app guards, and in-app updates. Version 2.2 adds a **disk trend**, **new-since-last-scan** tags, a **largest files** finder, **protect from the UI**, a **command palette**, keyboard navigation, themes and JSON/CSV reports.
 
 | Front end | What it is | Best for |
 |-----------|------------|----------|
@@ -80,6 +80,15 @@ The Explore view is a squarified treemap of any directory, two levels deep, with
   <img src="docs/images/app-candidates-grouped.png" alt="Candidates grouped by app" width="49%">
 </p>
 
+## Trend, palette, keyboard
+
+Every scan records recoverable and free space, so the Overview shows where the disk is heading and the candidates list tags anything that was not there last time. `⌘K` (Ctrl K) opens a command palette for rescan, safe sweep, cleaning, views, export and theme, and searches candidates by name, path or owner. In the candidates table `↑↓` move, `space` selects, `enter` opens details and `x` excludes. Any folder can be marked protected from a candidate's details or from the explorer; the explorer also has a *Largest files* tab.
+
+<p align="center">
+  <img src="docs/images/app-palette.png" alt="Command palette" width="49%">
+  <img src="docs/images/app-trend.png" alt="Disk trend and volumes in dark theme" width="49%">
+</p>
+
 ## Menu bar, schedule, updates
 
 The desktop app keeps running in the menu bar / system tray when its window is closed (configurable). It rescans in the background every 24 hours (configurable), shows the recoverable size next to the tray icon on macOS, and sends a notification when more than 5 GB can be reclaimed. Launch at login is enabled together with the tray. Updates are checked on launch and installed in place when the release carries signed updater artifacts.
@@ -126,6 +135,15 @@ The Explore view is a squarified treemap of any directory, two levels deep, with
 <p align="center">
   <img src="docs/images/app-explore.png" alt="Treemap explorer" width="49%">
   <img src="docs/images/app-candidates-grouped.png" alt="Candidates grouped by app" width="49%">
+</p>
+
+## Trend, palette, keyboard
+
+Every scan records recoverable and free space, so the Overview shows where the disk is heading and the candidates list tags anything that was not there last time. `⌘K` (Ctrl K) opens a command palette for rescan, safe sweep, cleaning, views, export and theme, and searches candidates by name, path or owner. In the candidates table `↑↓` move, `space` selects, `enter` opens details and `x` excludes. Any folder can be marked protected from a candidate's details or from the explorer; the explorer also has a *Largest files* tab.
+
+<p align="center">
+  <img src="docs/images/app-palette.png" alt="Command palette" width="49%">
+  <img src="docs/images/app-trend.png" alt="Disk trend and volumes in dark theme" width="49%">
 </p>
 
 ## Menu bar, schedule, updates
@@ -208,6 +226,8 @@ cleanprojects undo --run 2 / --id <recovery id>
 cleanprojects recovery                          # list the bin; --purge frees old entries, --empty frees all
 cleanprojects volumes                           # mounted disks and whether they are scanned
 cleanprojects explore ~/Library --top 20        # largest entries of a directory
+cleanprojects large --min-size 500 --top 20     # largest files under home and project roots
+cleanprojects scan --report report.csv          # Markdown, JSON or CSV by extension
 cleanprojects scan --json-stream                # one JSON object per line while scanning
 cleanprojects skill --install                   # Claude Code / Codex / Cursor skill describing this CLI
 
@@ -257,6 +277,7 @@ close_to_tray = true
 scan_interval_hours = 24
 notify_threshold_gb = 5
 check_updates = true
+theme = "system"                       # system | light | dark
 ```
 
 ## Build from source

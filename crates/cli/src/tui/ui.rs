@@ -458,6 +458,9 @@ fn draw_table(f: &mut Frame, app: &App, area: Rect) {
             if let Some(app_name) = &c.blocked_by {
                 label.push_str(&format!(" ⛔{app_name}"));
             }
+            if c.tags.iter().any(|t| t == "new") {
+                label.push_str(" ✦");
+            }
             let name_style = if ex {
                 theme::muted()
             } else if sel {

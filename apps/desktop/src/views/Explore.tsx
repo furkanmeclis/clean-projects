@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowUp, ChevronRight, FolderPlus, HardDrive, Home, LayoutGrid, List, Loader2, Usb } from "lucide-react";
+import { ArrowUp, ChevronRight, FileStack, FolderOpen, FolderPlus, HardDrive, Home, LayoutGrid, List, Loader2, ShieldPlus, Usb } from "lucide-react";
 import type { Api } from "../api";
 import type { Node, TreeNode, Volume } from "../types";
 import { compactPath, humanSize } from "../format";
@@ -13,6 +13,8 @@ interface Props {
   home: string;
   volumes: Volume[];
   onAdd: (path: string) => void;
+  onProtect: (path: string) => void;
+  onReveal: (path: string) => void;
 }
 
 interface Rect { x: number; y: number; w: number; h: number; }
@@ -57,13 +59,20 @@ function squarify(items: { size: number }[], rect: Rect): Rect[] {
 
 const PALETTE = ["var(--cat-project)", "var(--cat-ide)", "var(--cat-container)", "var(--cat-browser)", "var(--cat-packages)", "var(--cat-mobile)", "var(--cat-appdata)", "var(--cat-build)"];
 
-export function Explore({ lang, api, home, volumes, onAdd }: Props) {
+export function Explore({ lang, api, home, volumes, onAdd, onProtect, onReveal }: Props) {
   const s = STRINGS[lang];
   const [dir, setDir] = useState(home);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [list, setList] = useState<Node[]>([]);
   const [loading, setLoading] = useState(false);
-  const [view, setView] = useState<"map" | "list">("map");
+  const [view, setView] = useState<"map" | "list" | "large">("map");
+  const [large, setLarge] = useState<Node[] | null>(null);
+  const [largeLoading, setLargeLoading] = useState(false);
+  useEffect(() => {
+    if (view !== "large" || large !== null || largeLoading) return;
+    setLargeLoading(true);
+    api.largeFiles(null, 256, 80).then((l) => { setLarge(l); setLargeLoading(false); }).catch(() => setLargeLoading(false));
+  }, [view, large, largeLoading, api]);
   const tip = useTooltip();
 
   useEffect(() => {
@@ -124,11 +133,33 @@ export function Explore({ lang, api, home, volumes, onAdd }: Props) {
           <div className="seg">
             <button type="button" className={view === "map" ? "active" : ""} onClick={() => setView("map")}><LayoutGrid size={13} /> {s.treemap}</button>
             <button type="button" className={view === "list" ? "active" : ""} onClick={() => setView("list")}><List size={13} /> {s.listView}</button>
+            <button type="button" className={view === "large" ? "active" : ""} onClick={() => setView("large")}><FileStack size={13} /> {s.largeFiles}</button>
           </div>
         </div>
       </div>
 
-      <section className="panel" style={{ position: "relative" }}>
+      {view === "large" && (
+        <section className="panel">
+          <div className="panel-h"><span className="ico"><FileStack size={14} /></span>{s.largeFiles}<span className="sub">{largeLoading ? <Loader2 size={13} className="spin" /> : <span className="num">{(large ?? []).length} · {humanSize((large ?? []).reduce((a, n) => a + n.size, 0))}</span>}</span></div>
+          <div className="panel-b">
+            <p className="help" style={{ color: "var(--ink-3)", fontSize: 12, marginBottom: 10 }}>{s.largeHint}</p>
+            <div className="xlist">
+              {(large ?? []).map((n) => (
+                <div className="lf-row" key={n.path}>
+                  <span className="size">{humanSize(n.size)}</span>
+                  <span style={{ minWidth: 0 }}><span className="ln">{n.name}</span><span className="lp">{compactPath(n.path, home)}</span></span>
+                  <span className="age">{n.modified ? new Date(n.modified).toLocaleDateString() : ""}</span>
+                  <button type="button" className="ib" title={s.reveal} onClick={() => onReveal(n.path)}><FolderOpen size={14} /></button>
+                  <button type="button" className="ib" title={s.addToSelection} onClick={() => onAdd(n.path)}><FolderPlus size={14} /></button>
+                  <button type="button" className="ib" title={s.protectHint} onClick={() => onProtect(n.path.replace(/[\\/][^\\/]+$/, ""))}><ShieldPlus size={14} /></button>
+                </div>
+              ))}
+              {!largeLoading && large && large.length === 0 && <div className="empty"><strong>—</strong></div>}
+            </div>
+          </div>
+        </section>
+      )}
+      <section className="panel" style={{ position: "relative", display: view === "large" ? "none" : undefined }}>
         <div className="panel-h"><span className="ico"><LayoutGrid size={14} /></span>{compactPath(dir, home)}<span className="sub">{loading ? <Loader2 size={13} className="spin" /> : <span className="num">{humanSize(total)} · {list.length}</span>}</span></div>
         <div className="panel-b">
           {view === "map" && (
@@ -173,6 +204,7 @@ export function Explore({ lang, api, home, volumes, onAdd }: Props) {
                   <span className="xsize num">{humanSize(n.size)}</span>
                   <span className="xfiles num">{n.is_dir ? `${n.files} ${s.files}` : ""}</span>
                   <button type="button" className="ib" title={s.addToSelection} onClick={() => onAdd(n.path)}><FolderPlus size={14} /></button>
+                  {n.is_dir && <button type="button" className="ib" title={s.protectHint} onClick={() => onProtect(n.path)}><ShieldPlus size={14} /></button>}
                 </div>
               ))}
             </div>

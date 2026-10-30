@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, Calendar, ChevronDown, EyeOff, FileText, Fingerprint, FolderGit2, FolderOpen, FolderSearch, Hourglass, Info, Layers, ListFilter, Lock, RotateCcw, Search, Sparkles, SquareCheckBig, SquareDashed, Usb, X } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Calendar, ChevronDown, EyeOff, FileText, Fingerprint, FolderGit2, FolderOpen, FolderSearch, Hourglass, Info, Layers, ListFilter, Lock, RotateCcw, Search, ShieldPlus, Sparkles, SquareCheckBig, SquareDashed, Usb, X } from "lucide-react";
+import { useEffect } from "react";
 import type { Candidate, Category, Risk } from "../types";
 import { CATEGORIES, actionDisplay, actionPath } from "../types";
 import { ageDays, ageLabel, compactPath, formatDate, humanSize } from "../format";
@@ -22,6 +23,7 @@ interface Props {
   onActivate: (id: string | null) => void;
   onExclude: (id: string) => void;
   onReveal: (path: string) => void;
+  onProtect: (path: string) => void;
   hasScanned: boolean;
   scanning: boolean;
 }
@@ -35,6 +37,8 @@ export function Candidates(p: Props) {
   const [category, setCategory] = useState<Category | "all">("all");
   const [catOpen, setCatOpen] = useState(false);
   const [staleOnly, setStaleOnly] = useState(false);
+  const [newOnly, setNewOnly] = useState(false);
+  const [cursor, setCursor] = useState<number>(-1);
   const [showExcluded, setShowExcluded] = useState(false);
   const [sort, setSort] = useState<SortKey>("size");
   const [desc, setDesc] = useState(true);
@@ -48,6 +52,7 @@ export function Candidates(p: Props) {
       if (risk !== "all" && c.risk !== risk) return false;
       if (category !== "all" && c.category !== category) return false;
       if (staleOnly && !c.tags?.includes("stale")) return false;
+      if (newOnly && !c.tags?.includes("new")) return false;
       if (q) {
         const hay = `${c.label} ${actionDisplay(c.action)} ${c.category} ${c.project?.name ?? ""} ${(c.tags ?? []).join(" ")}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -64,7 +69,28 @@ export function Candidates(p: Props) {
       }
     });
     return rows;
-  }, [p.candidates, p.excluded, query, risk, category, staleOnly, showExcluded, sort, desc]);
+  }, [p.candidates, p.excluded, query, risk, category, staleOnly, newOnly, showExcluded, sort, desc]);
+
+  // Keyboard navigation over the visible rows.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+      if (document.querySelector(".backdrop")) return;
+      if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); setCursor((c) => Math.min(visible.length - 1, c + 1)); }
+      else if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); setCursor((c) => Math.max(0, c - 1)); }
+      else if (e.key === " " && cursor >= 0 && visible[cursor]) { e.preventDefault(); if (!p.excluded.has(visible[cursor].id)) p.onToggle(visible[cursor].id); }
+      else if (e.key === "Enter" && cursor >= 0 && visible[cursor]) { e.preventDefault(); p.onActivate(p.activeId === visible[cursor].id ? null : visible[cursor].id); }
+      else if (e.key === "x" && cursor >= 0 && visible[cursor]) { e.preventDefault(); p.onExclude(visible[cursor].id); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [visible, cursor, p]);
+  useEffect(() => {
+    if (cursor < 0) return;
+    const el = document.querySelector<HTMLElement>(`[data-row-index="${cursor}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [cursor]);
 
   const groupKey = (c: Candidate): string => {
     switch (group) {
@@ -134,6 +160,7 @@ export function Candidates(p: Props) {
           )}
         </div>
         <button type="button" className={`tog ${staleOnly ? "on" : ""}`} onClick={() => setStaleOnly(!staleOnly)}><Hourglass size={14} /> {s.staleOnly}</button>
+        {p.candidates.some((c) => c.tags?.includes("new")) && <button type="button" className={`tog ${newOnly ? "on" : ""}`} onClick={() => setNewOnly(!newOnly)}><Sparkles size={14} /> {s.newOnly}</button>}
         <button type="button" className={`tog ${showExcluded ? "on" : ""}`} onClick={() => setShowExcluded(!showExcluded)}><EyeOff size={14} /> {s.showExcluded}</button>
         <div className="right">
           <button type="button" className="btn sm" onClick={() => p.onSelectMany(visible.filter((c) => c.risk === "low" && !p.excluded.has(c.id)).map((c) => c.id), true)}><Sparkles size={13} /> {s.selectSafe}</button>
@@ -169,13 +196,14 @@ export function Candidates(p: Props) {
             const isEx = p.excluded.has(c.id);
             const path = actionPath(c.action);
             const I = CATEGORY_ICON[c.category];
+            const rowIndex = visible.indexOf(c);
             return (
-              <div key={c.id} className={`trow risk-${c.risk} ${isSel ? "sel" : ""} ${isEx ? "ex" : ""} ${p.activeId === c.id ? "cur" : ""}`}
-                onClick={() => !isEx && p.onToggle(c.id)} onDoubleClick={() => p.onActivate(c.id)}>
+              <div key={c.id} data-row-index={rowIndex} className={`trow risk-${c.risk} ${isSel ? "sel" : ""} ${isEx ? "ex" : ""} ${p.activeId === c.id || cursor === rowIndex ? "cur" : ""}`}
+                onClick={() => { setCursor(rowIndex); if (!isEx) p.onToggle(c.id); }} onDoubleClick={() => p.onActivate(c.id)}>
                 <span onClick={(e) => { e.stopPropagation(); if (!isEx) p.onToggle(c.id); }}><CheckBox checked={isSel} /></span>
                 <span className="cico" style={{ background: CATEGORY_VAR[c.category] }}><I size={15} /></span>
                 <div className="cell">
-                  <span className="n">{c.label} <Tags c={c} lang={p.lang} />{c.blocked_by && <span className="blocked"><Lock size={9} />{c.blocked_by} · {s.blockedBy}</span>}{c.volume && c.volume !== "/" && <span className="tag mute"><Usb size={9} />{c.volume.split(/[\/]/).pop()}</span>}{isEx && <span className="tag mute"><EyeOff size={10} />{s.excluded}</span>}</span>
+                  <span className="n">{c.label} <Tags c={c} lang={p.lang} />{c.tags?.includes("new") && <span className="tag new"><Sparkles size={9} />{s.newTag}</span>}{c.blocked_by && <span className="blocked"><Lock size={9} />{c.blocked_by} · {s.blockedBy}</span>}{c.volume && c.volume !== "/" && <span className="tag mute"><Usb size={9} />{c.volume.split(/[\/]/).pop()}</span>}{isEx && <span className="tag mute"><EyeOff size={10} />{s.excluded}</span>}</span>
                   <span className="p" title={actionDisplay(c.action)}>{compactPath(actionDisplay(c.action), p.home)}</span>
                 </div>
                 <CategoryBadge category={c.category} lang={p.lang} />
@@ -195,18 +223,19 @@ export function Candidates(p: Props) {
           {visible.length > 0 && (
             <div className="tfoot">
               <ListFilter size={13} /><span><span className="num">{visible.length}</span> {s.items} · <span className="num">{humanSize(visibleTotal)}</span></span>
+              <span style={{ marginLeft: 12, color: "var(--ink-3)" }}>{s.keyboardNav}</span>
               <span className="spacer" />
               <SquareCheckBig size={13} /><span><span className="num">{selectedVisible.length}</span> {s.selected.toLowerCase()} · <span className="num">{humanSize(selectedVisible.reduce((a, c) => a + c.size, 0))}</span></span>
             </div>
           )}
         </div>
-        {active && <Detail c={active} lang={p.lang} home={p.home} excluded={p.excluded.has(active.id)} onClose={() => p.onActivate(null)} onExclude={() => p.onExclude(active.id)} onReveal={p.onReveal} />}
+        {active && <Detail c={active} lang={p.lang} home={p.home} excluded={p.excluded.has(active.id)} onClose={() => p.onActivate(null)} onExclude={() => p.onExclude(active.id)} onReveal={p.onReveal} onProtect={p.onProtect} />}
       </div>
     </>
   );
 }
 
-function Detail({ c, lang, home, excluded, onClose, onExclude, onReveal }: { c: Candidate; lang: Lang; home: string; excluded: boolean; onClose: () => void; onExclude: () => void; onReveal: (p: string) => void }) {
+function Detail({ c, lang, home, excluded, onClose, onExclude, onReveal, onProtect }: { c: Candidate; lang: Lang; home: string; excluded: boolean; onClose: () => void; onExclude: () => void; onReveal: (p: string) => void; onProtect: (p: string) => void }) {
   const s = STRINGS[lang];
   const path = actionPath(c.action);
   const I = CATEGORY_ICON[c.category];
@@ -233,6 +262,7 @@ function Detail({ c, lang, home, excluded, onClose, onExclude, onReveal }: { c: 
         <div className="acts2">
           {path && <button type="button" className="btn sm" onClick={() => onReveal(path)}><FolderOpen size={13} /> {s.reveal}</button>}
           <button type="button" className="btn sm" onClick={onExclude}>{excluded ? <RotateCcw size={13} /> : <EyeOff size={13} />} {excluded ? s.restore : s.exclude}</button>
+          {c.action.type === "remove-path" && <button type="button" className="btn sm" title={s.protectHint} onClick={() => onProtect(c.action.type === "remove-path" ? c.action.path : "")}><ShieldPlus size={13} /> {s.protect}</button>}
           <button type="button" className="btn sm quiet" onClick={onClose}><FolderSearch size={13} /> {s.close}</button>
         </div>
       </div>

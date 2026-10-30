@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.2.0
+
+### Added
+- Disk trend: every scan records recoverable and free space; the Overview draws the curve and `cleanprojects history` prints a sparkline.
+- Candidates that did not exist in the previous scan carry a `new` tag; the desktop app has a *New only* filter.
+- Largest files finder: `cleanprojects large`, and a *Largest files* tab in the explorer with reveal, add-to-selection and protect actions.
+- Protect from the UI: a candidate's detail panel and the explorer can add a folder to the protected list; matching candidates disappear immediately.
+- Theme setting (system, light, dark) with a one-click toggle in the rail.
+- Command palette (⌘/Ctrl K): rescan, safe sweep, clean, views, export, theme, plus fuzzy search across candidates.
+- Keyboard navigation in the candidates table: ↑↓ or j/k move, space selects, enter opens details, x excludes.
+- Reports in Markdown, JSON or CSV from the export menu and `--report file.json|csv`.
+- A notification when a cleanup finishes while the window is hidden in the tray.
+
 ## 2.1.0
 
 ### Added

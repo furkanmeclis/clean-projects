@@ -116,6 +116,8 @@ pub struct UiConfig {
     pub notify_threshold_gb: u64,
     /// Desktop: check GitHub releases for updates on launch.
     pub check_updates: bool,
+    /// Desktop: system, light or dark.
+    pub theme: String,
 }
 
 impl Default for UiConfig {
@@ -126,6 +128,7 @@ impl Default for UiConfig {
             scan_interval_hours: 24,
             notify_threshold_gb: 5,
             check_updates: true,
+            theme: "system".into(),
         }
     }
 }
@@ -194,6 +197,12 @@ impl Config {
             "ui.scan_interval_hours" => self.ui.scan_interval_hours = n(v)?,
             "ui.notify_threshold_gb" => self.ui.notify_threshold_gb = n(v)?,
             "ui.check_updates" => self.ui.check_updates = b(v)?,
+            "ui.theme" => {
+                if !["system", "light", "dark"].contains(&v.to_ascii_lowercase().as_str()) {
+                    anyhow::bail!("expected system, light or dark");
+                }
+                self.ui.theme = v.to_ascii_lowercase();
+            }
             "ui.language" => self.ui.language = Lang::parse(v).context("expected 'en' or 'tr'")?,
             _ => anyhow::bail!("unknown config key '{key}'"),
         }
@@ -225,6 +234,7 @@ impl Config {
             "ui.scan_interval_hours",
             "ui.notify_threshold_gb",
             "ui.check_updates",
+            "ui.theme",
         ]
     }
 }
@@ -271,6 +281,18 @@ impl HistoryEntry {
     }
 }
 
+/// One point of the disk trend, recorded after every scan.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ScanSnapshot {
+    pub at: DateTime<Local>,
+    pub recoverable: u64,
+    pub free: u64,
+    pub total: u64,
+    pub candidates: usize,
+}
+
+pub const MAX_SNAPSHOTS: usize = 90;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct State {
@@ -278,9 +300,43 @@ pub struct State {
     pub history: Vec<HistoryEntry>,
     pub last_scan_at: Option<DateTime<Local>>,
     pub last_recoverable: u64,
+    /// Trend of recoverable and free space, newest last.
+    pub scans: Vec<ScanSnapshot>,
 }
 
 impl State {
+    /// Record a finished scan in the trend (at most one point per 10 minutes).
+    pub fn record_scan(&mut self, recoverable: u64, free: u64, total: u64, candidates: usize) {
+        let now = Local::now();
+        if let Some(last) = self.scans.last_mut() {
+            if now.signed_duration_since(last.at).num_minutes() < 10 {
+                *last = ScanSnapshot {
+                    at: now,
+                    recoverable,
+                    free,
+                    total,
+                    candidates,
+                };
+                self.last_scan_at = Some(now);
+                self.last_recoverable = recoverable;
+                return;
+            }
+        }
+        self.scans.push(ScanSnapshot {
+            at: now,
+            recoverable,
+            free,
+            total,
+            candidates,
+        });
+        if self.scans.len() > MAX_SNAPSHOTS {
+            let drop = self.scans.len() - MAX_SNAPSHOTS;
+            self.scans.drain(..drop);
+        }
+        self.last_scan_at = Some(now);
+        self.last_recoverable = recoverable;
+    }
+
     pub fn toggle_excluded(&mut self, id: &str) -> bool {
         if self.excluded.remove(id) {
             false
@@ -446,10 +502,15 @@ mod tests {
             mode: "trash".into(),
             items: vec![],
         });
+        st.record_scan(100, 50, 200, 3);
+        st.record_scan(120, 40, 200, 4);
+        assert_eq!(st.scans.len(), 1, "points within 10 minutes collapse");
+        assert_eq!(st.scans[0].recoverable, 120);
         paths.save_state(&st).unwrap();
         let back = paths.load_state().unwrap();
         assert!(back.excluded.contains("abc"));
         assert_eq!(back.total_freed(), 10);
+        assert_eq!(back.scans.len(), 1);
         paths.save_config(&Config::default()).unwrap();
         assert_eq!(paths.load_config().unwrap(), Config::default());
     }

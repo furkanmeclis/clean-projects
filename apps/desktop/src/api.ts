@@ -1,7 +1,7 @@
 // Bridge to the Tauri backend. When the page runs outside Tauri (plain browser,
 // screenshots, UI development) a mock implementation with sample data is used.
 
-import type { Bootstrap, Candidate, CleanDone, CleanMode, Config, HistoryEntry, Node, RecoverySummary, ScanSummary, TreeNode, Volume } from "./types";
+import type { Bootstrap, Candidate, CleanDone, CleanMode, Config, HistoryEntry, Node, RecoverySummary, ScanSnapshot, ScanSummary, TreeNode, Volume } from "./types";
 
 export interface CleanRequest {
   ids: string[];
@@ -31,7 +31,9 @@ export interface Api {
   exploreDir(path: string): Promise<Node[]>;
   exploreTree(path: string, depth?: number, top?: number): Promise<TreeNode[]>;
   addManualCandidate(path: string): Promise<Candidate>;
-  writeReport(path: string, ids: string[]): Promise<string>;
+  largeFiles(path?: string | null, minMb?: number, top?: number): Promise<Node[]>;
+  protectPath(path: string): Promise<Config>;
+  writeReport(path: string, ids: string[], format?: "md" | "json" | "csv"): Promise<string>;
   reveal(path: string): Promise<void>;
   saveDialog(defaultName: string): Promise<string | null>;
   checkUpdate(): Promise<UpdateInfo | null>;
@@ -46,7 +48,8 @@ export type EventName =
   | "clean://start"
   | "clean://log"
   | "clean://item"
-  | "clean://done";
+  | "clean://done"
+  | "candidates://changed";
 
 export interface ScanProgress {
   phase: string;
@@ -88,7 +91,9 @@ async function tauriApi(): Promise<Api> {
     exploreDir: (path) => invoke<Node[]>("explore_dir", { path }),
     exploreTree: (path, depth, top) => invoke<TreeNode[]>("explore_tree", { path, depth, top }),
     addManualCandidate: (path) => invoke<Candidate>("add_manual_candidate", { path }),
-    writeReport: (path, ids) => invoke<string>("write_report", { path, ids }),
+    largeFiles: (path, minMb, top) => invoke<Node[]>("large_files", { path: path ?? null, minMb: minMb ?? null, top: top ?? null }),
+    protectPath: (path) => invoke<Config>("protect_path", { path }),
+    writeReport: (path, ids, format) => invoke<string>("write_report", { path, ids, format: format ?? null }),
     checkUpdate: async () => {
       try {
         const { check } = await import("@tauri-apps/plugin-updater");
@@ -105,7 +110,7 @@ async function tauriApi(): Promise<Api> {
     },
     reveal: (path) => opener.revealItemInDir(path),
     saveDialog: (defaultName) =>
-      dialog.save({ defaultPath: defaultName, filters: [{ name: "Markdown", extensions: ["md"] }] }),
+      dialog.save({ defaultPath: defaultName, filters: [{ name: "Report", extensions: ["md", "json", "csv"] }] }),
     on: async (event, handler) => {
       const un = await listen(event, (e) => handler(e.payload as never));
       return un;
@@ -127,7 +132,7 @@ function mockApi(): Api {
     c("a3", "shop-frontend · node_modules", "project", "low", 2.3e9, `${home}/Projects/shop-frontend/node_modules`, "Installed npm dependencies. Project: shop-frontend (node), idle 84 days.", 84, true, { root: `${home}/Projects/shop-frontend`, name: "shop-frontend", kind: "node", idle_days: 84 }, ["node", "stale"]),
     c("a4", "Gradle caches", "package-cache", "medium", 4.1e9, `${home}/.gradle/caches`, "Gradle dependency and build caches.", 12),
     { ...c("a5", "Cursor global state DB", "app-data", "high", 1.9e9, `${home}/Library/Application Support/Cursor/User/globalStorage/state.vscdb`, "Close Cursor first; settings and chat state may reset.", 0), blocked_by: "Cursor", owner: "Cursor" },
-    { ...c("a12", "Docker image postgres:15", "container", "medium", 412e6, "docker rmi 9f1c2a", "Image created 2 months ago, not used by any container.", null, false), owner: "Docker", tags: ["image"] },
+    { ...c("a12", "Docker image postgres:15", "container", "medium", 412e6, "docker rmi 9f1c2a", "Image created 2 months ago, not used by any container.", null, false), owner: "Docker", tags: ["image", "new"] },
     { ...c("a13", "Installer Xcode_16.1.xip", "temp", "low", 3.2e9, `${home}/Downloads/Xcode_16.1.xip`, "XIP file in Downloads, 41 days old.", 41), owner: "Downloads", tags: ["installer"] },
     { ...c("a14", "mobile-app · build", "project", "low", 920e6, `/Volumes/Work SSD/mobile-app/build`, "Build output. Project: mobile-app (flutter), idle 12 days.", 12, true, { root: "/Volumes/Work SSD/mobile-app", name: "mobile-app", kind: "flutter", idle_days: 12 }, ["flutter"]), owner: "mobile-app", volume: "/Volumes/Work SSD" },
     c("a6", "api-core · target", "project", "low", 6.2e9, `${home}/Projects/api-core/target`, "Compiler output (cargo). Project: api-core (rust), idle 2 days.", 2, true, { root: `${home}/Projects/api-core`, name: "api-core", kind: "rust", idle_days: 2 }, ["rust"]),
@@ -137,7 +142,7 @@ function mockApi(): Api {
     gitc("g2", "shop-frontend · prune 2 worktree record(s)", "git-worktree-prune", `${home}/Projects/shop-frontend`, 0, "Worktree directories that no longer exist: feat-a, feat-b.", "low", ["worktree"]),
     gitc("g3", "api-core · git gc", "git-gc", `${home}/Projects/api-core`, 220e6, "4210 loose objects (430 MB). git gc repacks them.", "low", ["gc"]),
     c("a9", "pnpm store", "package-cache", "medium", 3.4e9, `${home}/Library/pnpm/store`, "pnpm content-addressable store.", 5),
-    c("a10", "JetBrains caches", "ide", "low", 2.8e9, `${home}/Library/Caches/JetBrains`, "IDE index caches. Projects re-index.", 1),
+    { ...c("a10", "JetBrains caches", "ide", "low", 2.8e9, `${home}/Library/Caches/JetBrains`, "IDE index caches. Projects re-index.", 1), tags: ["new"] },
     c("a11", "legacy-site · vendor", "project", "low", 310e6, `${home}/Documents/legacy-site/vendor`, "Composer dependencies. Project: legacy-site (php), idle 240 days.", 240, true, { root: `${home}/Documents/legacy-site`, name: "legacy-site", kind: "php", idle_days: 240 }, ["php", "stale"]),
   ];
   let candidates: Candidate[] = [];
@@ -158,8 +163,15 @@ function mockApi(): Api {
     scan: { roots: ["~/Projects", "~/Documents"], default_roots: true, max_depth: 6, min_size_mb: 1, stale_days: 30, protected: [], disabled_rules: [], volumes: true, skip_volumes: [], installer_days: 7 },
     git: { enabled: true, merged_branches: false, gc: true, worktree_idle_days: 7 },
     clean: { use_trash: true, mode: "recovery", recovery_days: 14, block_running_apps: true },
-    ui: { language: "en", close_to_tray: true, scan_interval_hours: 24, notify_threshold_gb: 5, check_updates: true },
+    ui: { language: "en", close_to_tray: true, scan_interval_hours: 24, notify_threshold_gb: 5, check_updates: true, theme: "system" },
   };
+  const scans: ScanSnapshot[] = Array.from({ length: 14 }, (_, i) => ({
+    at: new Date(Date.now() - (13 - i) * 86400000 * 2).toISOString(),
+    recoverable: 30e9 + Math.sin(i / 2) * 9e9 + i * 1.6e9,
+    free: 230e9 - i * 3.4e9 + (i % 3) * 2e9,
+    total: 994e9,
+    candidates: 10 + i,
+  }));
   const disk = { mount: "/", total: 994e9, free: 182e9, used: 812e9 };
   const vols: Volume[] = [
     { name: "Macintosh HD", mount: "/", total: 994e9, free: 182e9, used: 812e9, kind: "system", removable: false, read_only: false, file_system: "apfs" },
@@ -191,6 +203,7 @@ function mockApi(): Api {
         guarded: 3,
         scanning: false,
         recovery,
+        scans,
       };
     },
     async startScan() {
@@ -284,6 +297,15 @@ function mockApi(): Api {
       const c: Candidate = { id: `m-${name}`, label: name, description: "Picked in the explorer.", category: "temp", risk: "high", size: 1.2e9, size_exact: true, modified: null, action: { type: "remove-path", path }, project: null, tags: ["manual"], owner: "Explorer" };
       candidates.push(c);
       return c;
+    },
+    async largeFiles() {
+      const mk = (name: string, size: number, dir: string): Node => ({ name, path: `${dir}/${name}`, size, files: 1, is_dir: false, is_symlink: false, modified: new Date(Date.now() - size / 1e6 * 3600000).toISOString() });
+      return [mk("Xcode_16.1.xip", 3.2e9, `${home}/Downloads`), mk("ubuntu-24.04.iso", 2.6e9, `${home}/Downloads`), mk("Big Buck Bunny 4K.mkv", 1.9e9, `${home}/Movies`), mk("dataset.parquet", 1.3e9, `${home}/Projects/ml`), mk("macOS Sequoia.dmg", 1.1e9, `${home}/Downloads`), mk("node-v22.tar.gz", 420e6, `${home}/Downloads`), mk("libcleanprojects.a", 380e6, `${home}/Projects/api-core/target/debug`)];
+    },
+    async protectPath(path) {
+      config = { ...config, scan: { ...config.scan, protected: [...config.scan.protected, path.replace(home, "~")] } };
+      candidates = candidates.filter((c) => !(c.action.type === "remove-path" && c.action.path.startsWith(path)));
+      return config;
     },
     async checkUpdate() {
       return null;
