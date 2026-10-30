@@ -7,6 +7,7 @@
 - Long dialogs, the candidate detail panel and the navigation rail scroll when they do not fit; the candidate table scrolls sideways in narrow windows; the window no longer rubber-bands.
 - macOS installers: the DMG itself is now notarized and stapled, so Gatekeeper accepts it, and the app inside, without a network check.
 - `SHA256SUMS.txt` verifies the Windows archive (its checksum had a CRLF line ending).
+- Launch at login on macOS: System Settings › Login Items now lists CleanProjects by name and icon, not by the developer name on the signing certificate. An existing login item is updated on the next launch.
 
 ## 0.3.0
 

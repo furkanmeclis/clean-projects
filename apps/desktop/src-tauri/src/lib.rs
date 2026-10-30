@@ -558,9 +558,32 @@ fn save_config(app: AppHandle, st: TauriState<AppState>, config: Config) -> CmdR
 }
 
 fn apply_autostart(app: &AppHandle, enabled: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(m) = macos_launch_agent(app) {
+            let _ = if enabled { m.enable() } else { m.disable() };
+            return;
+        }
+    }
     use tauri_plugin_autostart::ManagerExt;
     let m = app.autolaunch();
     let _ = if enabled { m.enable() } else { m.disable() };
+}
+
+/// The same LaunchAgent the autostart plugin writes, plus AssociatedBundleIdentifiers.
+/// Without it System Settings › Login Items lists the agent under the signing
+/// certificate's name instead of the app's name and icon.
+#[cfg(target_os = "macos")]
+fn macos_launch_agent(app: &AppHandle) -> Option<auto_launch::AutoLaunch> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    auto_launch::AutoLaunchBuilder::new()
+        .set_app_name(&app.package_info().name)
+        .set_app_path(&exe.display().to_string())
+        .set_args(&["--background"])
+        .set_macos_launch_mode(auto_launch::MacOSLaunchMode::LaunchAgent)
+        .set_bundle_identifiers(&[&app.config().identifier])
+        .build()
+        .ok()
 }
 
 #[tauri::command]
@@ -1008,6 +1031,15 @@ pub fn run() {
             set_tray_title(&handle, cached_total);
             start_scheduler(handle.clone());
             start_routine_scheduler(handle.clone());
+            // Rewrite an agent left by an older version so it gains the bundle id.
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(m) = macos_launch_agent(&handle) {
+                    if m.is_enabled().unwrap_or(false) {
+                        let _ = m.enable();
+                    }
+                }
+            }
             if std::env::args().any(|a| a == "--background") {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
