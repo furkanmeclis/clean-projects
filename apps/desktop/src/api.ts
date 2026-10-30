@@ -1,7 +1,7 @@
 // Bridge to the Tauri backend. When the page runs outside Tauri (plain browser,
 // screenshots, UI development) a mock implementation with sample data is used.
 
-import type { Bootstrap, Candidate, CleanDone, CleanMode, Config, HistoryEntry, Node, RecoverySummary, ScanSnapshot, ScanSummary, TreeNode, Volume } from "./types";
+import type { Bootstrap, Candidate, CleanDone, CleanMode, Config, HistoryEntry, IntegrationStatus, Node, RecoverySummary, Routine, RoutineRun, ScanSnapshot, ScanSummary, TreeNode, Volume } from "./types";
 
 export interface CleanRequest {
   ids: string[];
@@ -18,7 +18,16 @@ export interface UpdateInfo {
 
 export interface Api {
   bootstrap(): Promise<Bootstrap>;
-  startScan(options?: { no_git?: boolean; no_tools?: boolean; background?: boolean }): Promise<void>;
+  startScan(options?: { no_git?: boolean; no_tools?: boolean; background?: boolean; roots?: string[] }): Promise<void>;
+  getCandidates(): Promise<Candidate[]>;
+  getRoutines(): Promise<[Routine[], RoutineRun[]]>;
+  routineTemplates(): Promise<Routine[]>;
+  saveRoutine(routine: Routine): Promise<Routine[]>;
+  deleteRoutine(id: string): Promise<Routine[]>;
+  runRoutine(id: string, dryRun?: boolean): Promise<void>;
+  integrationStatus(): Promise<IntegrationStatus>;
+  integrationInstall(): Promise<IntegrationStatus>;
+  integrationUninstall(): Promise<IntegrationStatus>;
   startClean(request: CleanRequest): Promise<void>;
   undoRun(index: number): Promise<[number, string[]]>;
   restoreEntry(id: string): Promise<RecoverySummary>;
@@ -49,7 +58,9 @@ export type EventName =
   | "clean://log"
   | "clean://item"
   | "clean://done"
-  | "candidates://changed";
+  | "candidates://changed"
+  | "launch://action"
+  | "routine://done";
 
 export interface ScanProgress {
   phase: string;
@@ -79,6 +90,15 @@ async function tauriApi(): Promise<Api> {
   return {
     bootstrap: () => invoke<Bootstrap>("bootstrap"),
     startScan: (options) => invoke("start_scan", { options: options ?? {} }),
+    getCandidates: () => invoke<Candidate[]>("get_candidates"),
+    getRoutines: () => invoke<[Routine[], RoutineRun[]]>("get_routines"),
+    routineTemplates: () => invoke<Routine[]>("routine_templates"),
+    saveRoutine: (routine) => invoke<Routine[]>("save_routine", { routine }),
+    deleteRoutine: (id) => invoke<Routine[]>("delete_routine", { id }),
+    runRoutine: (id, dryRun) => invoke("run_routine", { id, dryRun: dryRun ?? false }),
+    integrationStatus: () => invoke<IntegrationStatus>("integration_status"),
+    integrationInstall: () => invoke<IntegrationStatus>("integration_install"),
+    integrationUninstall: () => invoke<IntegrationStatus>("integration_uninstall"),
     startClean: (request) => invoke("start_clean", { request }),
     undoRun: (index) => invoke<[number, string[]]>("undo_run", { index }),
     restoreEntry: (id) => invoke<RecoverySummary>("restore_entry", { id }),
@@ -165,6 +185,17 @@ function mockApi(): Api {
     clean: { use_trash: true, mode: "recovery", recovery_days: 14, block_running_apps: true },
     ui: { language: "en", close_to_tray: true, scan_interval_hours: 24, notify_threshold_gb: 5, check_updates: true, theme: "system" },
   };
+  let routines: Routine[] = [
+    { id: "r1", name: "Weekly safe sweep", enabled: true, schedule: { kind: "weekly", weekday: 6, hour: 3 }, max_risk: "low", categories: [], stale_only: false, min_age_days: 0, mode: "recovery", roots: [], notify: true },
+    { id: "r2", name: "Monthly stale projects", enabled: true, schedule: { kind: "monthly", day: 1, hour: 4 }, max_risk: "low", categories: ["project"], stale_only: true, min_age_days: 0, mode: "recovery", roots: [], notify: true },
+    { id: "r3", name: "Docker build cache, every 6 h", enabled: false, schedule: { kind: "hours", hours: 6 }, max_risk: "low", categories: ["container"], stale_only: false, min_age_days: 0, mode: "recovery", roots: [], notify: false },
+  ];
+  let routineRuns: RoutineRun[] = [
+    { routine_id: "r1", name: "Weekly safe sweep", at: new Date(Date.now() - 86400000 * 2).toISOString(), freed: 18.4e9, items: 7, failed: 0 },
+    { routine_id: "r2", name: "Monthly stale projects", at: new Date(Date.now() - 86400000 * 12).toISOString(), freed: 2.3e9, items: 2, failed: 0 },
+    { routine_id: "r1", name: "Weekly safe sweep", at: new Date(Date.now() - 86400000 * 9).toISOString(), freed: 11.2e9, items: 5, failed: 1, error: null },
+  ];
+  let integration: IntegrationStatus = { installed: false, platform: "macos", locations: [`${home}/Library/Services/Scan with CleanProjects.workflow`, `${home}/Library/Services/Clean with CleanProjects.workflow`], note: "Finder › right-click a folder › Quick Actions." };
   const scans: ScanSnapshot[] = Array.from({ length: 14 }, (_, i) => ({
     at: new Date(Date.now() - (13 - i) * 86400000 * 2).toISOString(),
     recoverable: 30e9 + Math.sin(i / 2) * 9e9 + i * 1.6e9,
@@ -204,6 +235,11 @@ function mockApi(): Api {
         scanning: false,
         recovery,
         scans,
+        launch: null,
+        routines,
+        routine_runs: routineRuns,
+        integration,
+        exe: "/Applications/CleanProjects.app/Contents/MacOS/CleanProjects",
       };
     },
     async startScan() {
@@ -297,6 +333,49 @@ function mockApi(): Api {
       const c: Candidate = { id: `m-${name}`, label: name, description: "Picked in the explorer.", category: "temp", risk: "high", size: 1.2e9, size_exact: true, modified: null, action: { type: "remove-path", path }, project: null, tags: ["manual"], owner: "Explorer" };
       candidates.push(c);
       return c;
+    },
+    async getCandidates() {
+      return candidates;
+    },
+    async getRoutines() {
+      return [routines, routineRuns] as [Routine[], RoutineRun[]];
+    },
+    async routineTemplates() {
+      return [
+        { id: "t1", name: "Weekly safe sweep", enabled: true, schedule: { kind: "weekly", weekday: 6, hour: 3 }, max_risk: "low", categories: [], stale_only: false, min_age_days: 0, mode: "recovery", roots: [], notify: true },
+        { id: "t2", name: "Monthly stale projects", enabled: true, schedule: { kind: "monthly", day: 1, hour: 4 }, max_risk: "low", categories: ["project"], stale_only: true, min_age_days: 0, mode: "recovery", roots: [], notify: true },
+        { id: "t3", name: "Daily build caches", enabled: true, schedule: { kind: "daily", hour: 2 }, max_risk: "low", categories: ["build-cache", "container"], stale_only: false, min_age_days: 0, mode: "recovery", roots: [], notify: true },
+        { id: "t4", name: "Browser and temp, every 6 h", enabled: true, schedule: { kind: "hours", hours: 6 }, max_risk: "low", categories: ["browser", "temp"], stale_only: false, min_age_days: 0, mode: "recovery", roots: [], notify: true },
+      ] as Routine[];
+    },
+    async saveRoutine(r) {
+      const id = r.id || `r${Date.now()}`;
+      const nr = { ...r, id };
+      routines = routines.some((x) => x.id === id) ? routines.map((x) => (x.id === id ? nr : x)) : [...routines, nr];
+      return routines;
+    },
+    async deleteRoutine(id) {
+      routines = routines.filter((r) => r.id !== id);
+      return routines;
+    },
+    async runRoutine(id) {
+      const r = routines.find((x) => x.id === id);
+      setTimeout(() => {
+        const run: RoutineRun = { routine_id: id, name: r?.name ?? id, at: new Date().toISOString(), freed: 3.1e9, items: 3, failed: 0 };
+        routineRuns = [...routineRuns, run];
+        emit("routine://done", run);
+      }, 900);
+    },
+    async integrationStatus() {
+      return integration;
+    },
+    async integrationInstall() {
+      integration = { ...integration, installed: true };
+      return integration;
+    },
+    async integrationUninstall() {
+      integration = { ...integration, installed: false };
+      return integration;
     },
     async largeFiles() {
       const mk = (name: string, size: number, dir: string): Node => ({ name, path: `${dir}/${name}`, size, files: 1, is_dir: false, is_symlink: false, modified: new Date(Date.now() - size / 1e6 * 3600000).toISOString() });

@@ -117,6 +117,49 @@ export interface Config {
   };
   clean: { use_trash: boolean; mode: CleanMode; recovery_days: number; block_running_apps: boolean };
   ui: { language: "en" | "tr"; close_to_tray: boolean; scan_interval_hours: number; notify_threshold_gb: number; check_updates: boolean; theme: "system" | "light" | "dark" };
+  routines?: Routine[];
+}
+
+export type Schedule =
+  | { kind: "daily"; hour: number }
+  | { kind: "weekly"; weekday: number; hour: number }
+  | { kind: "monthly"; day: number; hour: number }
+  | { kind: "hours"; hours: number };
+
+export interface Routine {
+  id: string;
+  name: string;
+  enabled: boolean;
+  schedule: Schedule;
+  max_risk: Risk;
+  categories: Category[];
+  stale_only: boolean;
+  min_age_days: number;
+  mode: "recovery" | "trash";
+  roots: string[];
+  notify: boolean;
+}
+
+export interface RoutineRun {
+  routine_id: string;
+  name: string;
+  at: string;
+  freed: number;
+  items: number;
+  failed: number;
+  error?: string | null;
+}
+
+export interface IntegrationStatus {
+  installed: boolean;
+  platform: string;
+  locations: string[];
+  note: string;
+}
+
+export interface LaunchAction {
+  kind: "scan" | "clean";
+  path: string;
 }
 
 export interface ScanSnapshot {
@@ -166,6 +209,11 @@ export interface Bootstrap {
   scanning: boolean;
   recovery: RecoverySummary;
   scans: ScanSnapshot[];
+  launch: LaunchAction | null;
+  routines: Routine[];
+  routine_runs: RoutineRun[];
+  integration: IntegrationStatus;
+  exe: string;
 }
 
 export interface ScanSummary {

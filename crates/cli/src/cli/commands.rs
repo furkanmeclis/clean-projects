@@ -15,12 +15,15 @@ use anyhow::{Context, Result};
 use chrono::Local;
 use clap::CommandFactory;
 
-use crate::cli::{CleanCmd, Cli, ConfigCmd, FilterArgs, ModeArg, RiskArg, ScanArgs, ScanCmd};
+use crate::cli::{
+    CleanCmd, Cli, ConfigCmd, FilterArgs, ModeArg, RiskArg, RoutineCmd, ScanArgs, ScanCmd,
+};
 use cleanprojects_core::core::cleaner::{self, CleanEvent, CleanMode, CleanOptions};
-use cleanprojects_core::core::fsutil::{compact_path, ellipsize_middle, human_size};
+use cleanprojects_core::core::fsutil::{compact_path, ellipsize_end, ellipsize_middle, human_size};
 use cleanprojects_core::core::recovery;
 use cleanprojects_core::core::state::{Config, Paths, State};
 use cleanprojects_core::core::{Candidate, Category, Risk};
+use cleanprojects_core::routine::{self, Routine, Schedule};
 use cleanprojects_core::scan::{self, ScanContext, ScanEvent, ScanResult};
 use cleanprojects_core::{Volume, VolumeKind};
 
@@ -995,5 +998,329 @@ pub fn cmd_skill(env: &Env, install: bool) -> Result<()> {
     let file = dir.join("SKILL.md");
     std::fs::write(&file, SKILL_MD)?;
     out!("installed {}", file.display());
+    Ok(())
+}
+
+fn find_routine<'a>(env: &'a Env, name: &str) -> Result<&'a Routine> {
+    env.config
+        .routines
+        .iter()
+        .find(|r| r.id == name || r.name.eq_ignore_ascii_case(name))
+        .with_context(|| format!("no routine named '{name}'; see `cleanprojects routine list`"))
+}
+
+pub fn cmd_routine(env: &mut Env, cmd: RoutineCmd) -> Result<()> {
+    match cmd {
+        RoutineCmd::List { json } => {
+            if json {
+                out!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "routines": env.config.routines, "runs": env.state.routine_runs })
+                    )?
+                );
+                return Ok(());
+            }
+            if env.config.routines.is_empty() {
+                out!("No routines. Try `cleanprojects routine add --templates` or `cleanprojects routine add --name \"Safe sweep\" --every weekly@sun@3`.");
+                return Ok(());
+            }
+            let now = chrono::Local::now();
+            for r in &env.config.routines {
+                let last = r.last_run(&env.state);
+                out!(
+                    "{} {:<28} {:<24} risk≤{:<6} {:<18} {}  {}",
+                    if r.enabled {
+                        env.green("●")
+                    } else {
+                        env.dim("○")
+                    },
+                    ellipsize_end(&r.name, 28),
+                    r.schedule.describe(),
+                    r.max_risk.as_str(),
+                    if r.categories.is_empty() {
+                        "all categories".to_string()
+                    } else {
+                        r.categories
+                            .iter()
+                            .map(|c| c.as_str())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    },
+                    env.dim(
+                        &last
+                            .map(|l| format!(
+                                "last {} · {}",
+                                l.at.format("%Y-%m-%d %H:%M"),
+                                human_size(l.freed)
+                            ))
+                            .unwrap_or_else(|| "never run".into())
+                    ),
+                    if r.is_due(&env.state, now) {
+                        env.orange("due")
+                    } else {
+                        String::new()
+                    }
+                );
+            }
+            out!("{}", env.dim("run with `cleanprojects routine run <name>` or install the scheduler with `cleanprojects routine schedule --install`"));
+            Ok(())
+        }
+        RoutineCmd::Add {
+            name,
+            every,
+            max_risk,
+            categories,
+            stale,
+            min_age,
+            mode,
+            roots,
+            templates,
+        } => {
+            if templates {
+                let mut n = 0;
+                for t in routine::templates() {
+                    if !env.config.routines.iter().any(|r| r.name == t.name) {
+                        env.config.routines.push(t);
+                        n += 1;
+                    }
+                }
+                env.paths.save_config(&env.config)?;
+                out!("added {n} template routine(s)");
+                return Ok(());
+            }
+            let name = name.context("--name is required (or use --templates)")?;
+            let schedule = Schedule::parse(&every).with_context(|| format!("invalid schedule '{every}'; use daily@3, weekly@sun@4, monthly@1@5 or every@6h"))?;
+            let mut cats = Vec::new();
+            for c in &categories {
+                cats.push(Category::parse(c).with_context(|| format!("unknown category '{c}'"))?);
+            }
+            let r = Routine {
+                id: routine::new_id(),
+                name,
+                enabled: true,
+                schedule,
+                max_risk: max_risk_from(max_risk),
+                categories: cats,
+                stale_only: stale,
+                min_age_days: min_age,
+                mode: if mode.eq_ignore_ascii_case("trash") {
+                    "trash".into()
+                } else {
+                    "recovery".into()
+                },
+                roots: roots.iter().map(|r| r.display().to_string()).collect(),
+                notify: true,
+            };
+            out!("added '{}' ({})", r.name, r.schedule.describe());
+            env.config.routines.push(r);
+            env.paths.save_config(&env.config)
+        }
+        RoutineCmd::Run {
+            name,
+            due,
+            dry_run,
+            json,
+        } => {
+            let targets: Vec<Routine> = if due {
+                routine::due(&env.config, &env.state, chrono::Local::now())
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            } else {
+                vec![find_routine(env, &name.context("give a routine name or --due")?)?.clone()]
+            };
+            if targets.is_empty() {
+                if !json {
+                    out!("Nothing is due.");
+                }
+                return Ok(());
+            }
+            let mut runs = Vec::new();
+            for r in &targets {
+                if !json {
+                    out!(
+                        "{} {} ({})",
+                        env.orange("▶"),
+                        env.bold(&r.name),
+                        r.schedule.describe()
+                    );
+                }
+                let run = routine::run(&env.paths, &env.config, &mut env.state, r, dry_run);
+                if !json {
+                    out!(
+                        "  {} {} freed · {} items · {} failed{}",
+                        env.green("✓"),
+                        human_size(run.freed),
+                        run.items,
+                        run.failed,
+                        if dry_run { "  (dry run)" } else { "" }
+                    );
+                }
+                runs.push(run);
+            }
+            if json {
+                out!("{}", serde_json::to_string_pretty(&runs)?);
+            }
+            Ok(())
+        }
+        RoutineCmd::Enable { name } => set_routine_enabled(env, &name, true),
+        RoutineCmd::Disable { name } => set_routine_enabled(env, &name, false),
+        RoutineCmd::Remove { name } => {
+            let id = find_routine(env, &name)?.id.clone();
+            env.config.routines.retain(|r| r.id != id);
+            env.paths.save_config(&env.config)?;
+            out!("removed");
+            Ok(())
+        }
+        RoutineCmd::Schedule { install, uninstall } => {
+            cmd_routine_schedule(env, install, uninstall)
+        }
+    }
+}
+
+fn set_routine_enabled(env: &mut Env, name: &str, enable: bool) -> Result<()> {
+    let id = find_routine(env, name)?.id.clone();
+    if let Some(r) = env.config.routines.iter_mut().find(|r| r.id == id) {
+        r.enabled = enable;
+        out!("{} {}", r.name, if enable { "enabled" } else { "disabled" });
+    }
+    env.paths.save_config(&env.config)
+}
+
+fn max_risk_from(r: RiskArg) -> Risk {
+    match r {
+        RiskArg::Low => Risk::Low,
+        _ => Risk::Medium,
+    }
+}
+
+/// Install an hourly OS job running `cleanprojects routine run --due`.
+fn cmd_routine_schedule(env: &Env, install: bool, uninstall: bool) -> Result<()> {
+    let exe = std::env::current_exe()?;
+    let home = &env.paths.home;
+    if cfg!(target_os = "macos") {
+        let plist = home.join("Library/LaunchAgents/com.furkanmeclis.cleanprojects.routines.plist");
+        if uninstall {
+            let _ = std::process::Command::new("launchctl")
+                .args(["unload", &plist.display().to_string()])
+                .output();
+            if plist.exists() {
+                std::fs::remove_file(&plist)?;
+            }
+            out!("removed {}", plist.display());
+            return Ok(());
+        }
+        if !install {
+            out!(
+                "{}",
+                if plist.exists() {
+                    format!("installed: {}", plist.display())
+                } else {
+                    "not installed (use --install)".into()
+                }
+            );
+            return Ok(());
+        }
+        std::fs::create_dir_all(plist.parent().unwrap())?;
+        std::fs::write(
+            &plist,
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.furkanmeclis.cleanprojects.routines</string>
+  <key>ProgramArguments</key><array><string>{}</string><string>routine</string><string>run</string><string>--due</string></array>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>{}</string>
+  <key>StandardErrorPath</key><string>{}</string>
+</dict></plist>
+"#,
+                exe.display(),
+                env.paths.log_file.display(),
+                env.paths.log_file.display()
+            ),
+        )?;
+        let _ = std::process::Command::new("launchctl")
+            .args(["load", &plist.display().to_string()])
+            .output();
+        out!(
+            "installed {} (hourly; runs whatever is due)",
+            plist.display()
+        );
+    } else if cfg!(windows) {
+        let task = "CleanProjects Routines";
+        if uninstall {
+            let _ = std::process::Command::new("schtasks")
+                .args(["/Delete", "/TN", task, "/F"])
+                .output();
+            out!("removed scheduled task '{task}'");
+            return Ok(());
+        }
+        if !install {
+            let exists = std::process::Command::new("schtasks")
+                .args(["/Query", "/TN", task])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            out!(
+                "{}",
+                if exists {
+                    format!("installed: scheduled task '{task}'")
+                } else {
+                    "not installed (use --install)".into()
+                }
+            );
+            return Ok(());
+        }
+        let cmdline = format!("\"{}\" routine run --due", exe.display());
+        let o = std::process::Command::new("schtasks")
+            .args([
+                "/Create", "/F", "/SC", "HOURLY", "/TN", task, "/TR", &cmdline,
+            ])
+            .output()?;
+        if !o.status.success() {
+            anyhow::bail!("schtasks failed: {}", String::from_utf8_lossy(&o.stderr));
+        }
+        out!("installed scheduled task '{task}' (hourly)");
+    } else {
+        let dir = home.join(".config/systemd/user");
+        let service = dir.join("cleanprojects-routines.service");
+        let timer = dir.join("cleanprojects-routines.timer");
+        if uninstall {
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "disable", "--now", "cleanprojects-routines.timer"])
+                .output();
+            for f in [&service, &timer] {
+                if f.exists() {
+                    std::fs::remove_file(f)?;
+                }
+            }
+            out!("removed systemd user timer");
+            return Ok(());
+        }
+        if !install {
+            out!(
+                "{}",
+                if timer.exists() {
+                    format!("installed: {}", timer.display())
+                } else {
+                    "not installed (use --install)".into()
+                }
+            );
+            return Ok(());
+        }
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(&service, format!("[Unit]\nDescription=CleanProjects routines\n\n[Service]\nType=oneshot\nExecStart={} routine run --due\n", exe.display()))?;
+        std::fs::write(&timer, "[Unit]\nDescription=Run CleanProjects routines hourly\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1h\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n")?;
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .output();
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "enable", "--now", "cleanprojects-routines.timer"])
+            .output();
+        out!("installed {} (hourly)", timer.display());
+    }
     Ok(())
 }

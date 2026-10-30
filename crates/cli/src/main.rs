@@ -45,6 +45,7 @@ fn run(cli: Cli) -> Result<()> {
             top,
             json,
         }) => commands::cmd_large(&env, path, min_size, top, json),
+        Some(Command::Routine { cmd }) => commands::cmd_routine(&mut env, cmd),
         Some(Command::Skill { install }) => commands::cmd_skill(&env, install),
         Some(Command::Completions { .. }) => unreachable!(),
     }

@@ -140,6 +140,8 @@ pub struct Config {
     pub git: GitConfig,
     pub clean: CleanConfig,
     pub ui: UiConfig,
+    /// Scheduled cleanups.
+    pub routines: Vec<super::routine::Routine>,
 }
 
 impl Config {
@@ -302,6 +304,8 @@ pub struct State {
     pub last_recoverable: u64,
     /// Trend of recoverable and free space, newest last.
     pub scans: Vec<ScanSnapshot>,
+    /// Outcomes of scheduled routines, newest last.
+    pub routine_runs: Vec<super::routine::RoutineRun>,
 }
 
 impl State {

@@ -1,4 +1,6 @@
-import { GitBranch, GitFork, GitPullRequestClosed, Recycle, FolderGit2 } from "lucide-react";
+import { useState } from "react";
+import { GitBranch, GitFork, GitPullRequestClosed, Recycle, FolderGit2, Info, SquareCheck, Trash2 } from "lucide-react";
+import { ContextMenu, openMenu, type MenuState } from "../components/ContextMenu";
 import type { Candidate } from "../types";
 import { actionRepo } from "../types";
 import { compactPath, humanSize } from "../format";
@@ -15,10 +17,12 @@ interface Props {
   gitEnabled: boolean;
   onToggle: (id: string) => void;
   onActivate: (id: string) => void;
+  onCleanOne: (id: string) => void;
 }
 
-export function GitView({ lang, home, candidates, excluded, selected, gitEnabled, onToggle, onActivate }: Props) {
+export function GitView({ lang, home, candidates, excluded, selected, gitEnabled, onToggle, onActivate, onCleanOne }: Props) {
   const s = STRINGS[lang];
+  const [menu, setMenu] = useState<MenuState | null>(null);
   const git = candidates.filter((c) => c.category === "git" && !excluded.has(c.id));
   if (!gitEnabled) return <div className="panel"><div className="empty"><span className="ei"><GitBranch size={24} /></span><strong>{s.gitDisabled}</strong></div></div>;
   if (git.length === 0) return <div className="panel"><div className="empty"><span className="ei"><GitBranch size={24} /></span><strong>{s.gitEmpty}</strong></div></div>;
@@ -46,7 +50,13 @@ export function GitView({ lang, home, candidates, excluded, selected, gitEnabled
             <span className="sum">{humanSize(items.reduce((a, c) => a + c.size, 0))}</span>
           </div>
           {items.map((c) => (
-            <div key={c.id} className={`grow ${selected.has(c.id) ? "sel" : ""}`} onClick={() => onToggle(c.id)} onDoubleClick={() => onActivate(c.id)}>
+            <div key={c.id} className={`grow ${selected.has(c.id) ? "sel" : ""}`} onClick={() => onToggle(c.id)} onDoubleClick={() => onActivate(c.id)}
+              onContextMenu={(e) => openMenu(e, [
+                { label: selected.has(c.id) ? s.ctxDeselect : s.ctxSelect, icon: <SquareCheck size={14} />, onClick: () => onToggle(c.id) },
+                { label: s.ctxDetails, icon: <Info size={14} />, onClick: () => onActivate(c.id) },
+                { separator: true, label: "" },
+                { label: s.ctxCleanThis, icon: <Trash2 size={14} />, onClick: () => onCleanOne(c.id) },
+              ], setMenu)}>
               <span><CheckBox checked={selected.has(c.id)} /></span>
               <span className="gi">{icon(c)}</span>
               <div className="cell">
@@ -59,6 +69,7 @@ export function GitView({ lang, home, candidates, excluded, selected, gitEnabled
           ))}
         </section>
       ))}
+      <ContextMenu menu={menu} onClose={() => setMenu(null)} />
     </>
   );
 }

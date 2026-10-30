@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpCircle, ChevronDown, CircleCheckBig, Command, FileDown, FileJson, FileSpreadsheet, FileText, Flame, GitBranch, Github, History as HistoryIcon, Keyboard, LayoutDashboard, LayoutGrid, ListChecks, Loader2, Moon, RefreshCw, Settings as SettingsIcon, ShieldCheck, Sparkles, Sun, SunMoon, Trash2, X, Zap } from "lucide-react";
+import { ArrowUpCircle, CalendarClock, ChevronDown, CircleCheckBig, Command, FileDown, FileJson, FileSpreadsheet, FileText, Flame, GitBranch, Github, History as HistoryIcon, Keyboard, LayoutDashboard, LayoutGrid, ListChecks, Loader2, Moon, MousePointerClick, RefreshCw, Settings as SettingsIcon, ShieldCheck, Sparkles, Sun, SunMoon, Trash2, X, Zap } from "lucide-react";
+import { Routines } from "./views/Routines";
 import { CommandPalette, type PaletteAction } from "./components/CommandPalette";
 import { getApi, type Api, type CleanItem, type CleanStart, type ScanProgress, type UpdateInfo } from "./api";
-import type { Bootstrap, Candidate, CleanDone, CleanMode, Config, DiskInfo, HistoryEntry, RecoverySummary, ScanSnapshot, ScanSummary, Volume } from "./types";
+import type { Bootstrap, Candidate, CleanDone, CleanMode, Config, DiskInfo, HistoryEntry, IntegrationStatus, LaunchAction, RecoverySummary, Routine, RoutineRun, ScanSnapshot, ScanSummary, Volume } from "./types";
 import { Explore } from "./views/Explore";
 import { humanSize } from "./format";
 import { STRINGS, type Lang } from "./i18n";
@@ -13,7 +14,7 @@ import { History } from "./views/History";
 import { Settings } from "./views/Settings";
 import { CleanModal, type LogLine, type Phase } from "./components/CleanModal";
 
-type Tab = "overview" | "candidates" | "git" | "explore" | "history" | "settings";
+type Tab = "overview" | "candidates" | "git" | "explore" | "routines" | "history" | "settings";
 
 export default function App() {
   const apiRef = useRef<Api | null>(null);
@@ -42,6 +43,12 @@ export default function App() {
   const [scans, setScans] = useState<ScanSnapshot[]>([]);
   const [palette, setPalette] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [routines, setRoutines] = useState<Routine[]>([]);
+  const [routineRuns, setRoutineRuns] = useState<RoutineRun[]>([]);
+  const [routineRunning, setRoutineRunning] = useState(false);
+  const [integration, setIntegration] = useState<IntegrationStatus>({ installed: false, platform: "", locations: [], note: "" });
+  const [launch, setLaunch] = useState<LaunchAction | null>(null);
+  const launchRef = useRef<LaunchAction | null>(null);
   const [dryRun, setDryRun] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [showKeys, setShowKeys] = useState(false);
@@ -81,6 +88,9 @@ export default function App() {
       setGuarded(b.guarded);
       setCached(b.cached);
       setScans(b.scans);
+      setRoutines(b.routines);
+      setRoutineRuns(b.routine_runs);
+      setIntegration(b.integration);
       setCandidates(b.candidates);
       setHasScanned(b.candidates.length > 0);
       setScanning(b.scanning);
@@ -100,6 +110,19 @@ export default function App() {
         setCached(false);
         setHasScanned(true);
         api.bootstrap().then((nb) => setScans(nb.scans)).catch(() => {});
+        const la = launchRef.current;
+        if (la) {
+          launchRef.current = null;
+          setLaunch(null);
+          setTab("candidates");
+          if (la.kind === "clean") {
+            api.getCandidates().then((cs) => {
+              const ids = cs.filter((c) => c.risk === "low" && !c.blocked_by).map((c) => c.id);
+              setSelected(new Set(ids));
+              if (ids.length) { setDryRun(false); setModal({ kind: "confirm" }); }
+            }).catch(() => {});
+          }
+        }
         if (sum.background) {
           api.bootstrap().then((nb) => { setCandidates(nb.candidates); setSelected(new Set()); }).catch(() => {});
           setToast(`${STRINGS[lang].backgroundScan}: ${humanSize(sum.total)}`);
@@ -119,6 +142,14 @@ export default function App() {
         logRef.current = [...logRef.current, it.ok ? { text: `  ✓ ${humanSize(it.freed)}`, tone: "ok" } : { text: `  ✗ ${it.error ?? "failed"}`, tone: "fail" }];
         setModal({ kind: "running", ...cleanRef.current, log: logRef.current });
       }));
+      unsubs.push(await api.on<LaunchAction>("launch://action", (la) => runLaunch(api, la)));
+      unsubs.push(await api.on<RoutineRun>("routine://done", (run) => {
+        setRoutineRunning(false);
+        setRoutineRuns((rs) => [...rs, run]);
+        setToast(`${STRINGS[lang].routineDone}: ${run.name} · ${humanSize(run.freed)}`);
+        window.setTimeout(() => setToast(null), 4000);
+        api.bootstrap().then((nb) => { setHistory(nb.history); setRecovery(nb.recovery); setCandidates(nb.candidates); setScans(nb.scans); }).catch(() => {});
+      }));
       unsubs.push(await api.on<void>("candidates://changed", () => {
         api.bootstrap().then((nb) => { setCandidates(nb.candidates); setConfig(nb.config); }).catch(() => {});
       }));
@@ -134,7 +165,8 @@ export default function App() {
           setActiveId((a) => (a && gone.has(a) ? null : a));
         }
       }));
-      if (!b.scanning) startScan(api, b.cached);
+      if (b.launch) runLaunch(api, b.launch);
+      else if (!b.scanning) startScan(api, b.cached);
     })();
     return () => {
       disposed = true;
@@ -143,7 +175,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const startScan = useCallback(async (api?: Api, keepCached = false) => {
+  const startScan = useCallback(async (api?: Api, keepCached = false, roots?: string[]) => {
     const a = api ?? apiRef.current;
     if (!a) return;
     setScanning(true);
@@ -152,12 +184,61 @@ export default function App() {
     setActiveId(null);
     setProgress({ phase: "scan", message: "" });
     try {
-      await a.startScan();
+      await a.startScan(roots && roots.length ? { roots } : undefined);
     } catch (e) {
       setScanning(false);
       showToast(String(e));
     }
   }, [showToast]);
+
+  const runLaunch = useCallback((api: Api, la: LaunchAction) => {
+    launchRef.current = la;
+    setLaunch(la);
+    setTab("candidates");
+    setModal(null);
+    startScan(api, false, [la.path]);
+  }, [startScan]);
+
+  const scanHere = useCallback((path: string) => {
+    const api = apiRef.current;
+    if (!api) return;
+    runLaunch(api, { kind: "scan", path });
+  }, [runLaunch]);
+
+  const cleanOne = useCallback((id: string) => {
+    setSelected(new Set([id]));
+    setDryRun(false);
+    setModal({ kind: "confirm" });
+  }, []);
+
+  const saveRoutine = useCallback(async (r: Routine) => {
+    const api = apiRef.current;
+    if (!api) return;
+    try { setRoutines(await api.saveRoutine(r)); showToast(`${s.save} ✓`); } catch (e) { showToast(String(e)); }
+  }, [s, showToast]);
+  const deleteRoutine = useCallback(async (id: string) => {
+    const api = apiRef.current;
+    if (!api) return;
+    try { setRoutines(await api.deleteRoutine(id)); } catch (e) { showToast(String(e)); }
+  }, [showToast]);
+  const runRoutine = useCallback(async (id: string) => {
+    const api = apiRef.current;
+    if (!api) return;
+    try { setRoutineRunning(true); await api.runRoutine(id); showToast(s.routineRunning); } catch (e) { setRoutineRunning(false); showToast(String(e)); }
+  }, [s, showToast]);
+  const addTemplates = useCallback(async () => {
+    const api = apiRef.current;
+    if (!api) return;
+    const ts = await api.routineTemplates();
+    let list = routines;
+    for (const t of ts) { if (!list.some((r) => r.name === t.name)) list = await api.saveRoutine({ ...t, id: "" }); }
+    setRoutines(list);
+  }, [routines]);
+  const toggleIntegration = useCallback(async (install: boolean) => {
+    const api = apiRef.current;
+    if (!api) return;
+    try { setIntegration(install ? await api.integrationInstall() : await api.integrationUninstall()); showToast(install ? s.integrationInstalled : s.integrationNotInstalled); } catch (e) { showToast(String(e)); }
+  }, [s, showToast]);
 
   const toggle = useCallback((id: string) => {
     setSelected((sel) => {
@@ -310,8 +391,9 @@ export default function App() {
       if (e.key === "2") setTab("candidates");
       if (e.key === "3") setTab("git");
       if (e.key === "4") setTab("explore");
-      if (e.key === "5") setTab("history");
-      if (e.key === "6") setTab("settings");
+      if (e.key === "5") setTab("routines");
+      if (e.key === "6") setTab("history");
+      if (e.key === "7") setTab("settings");
       if (e.key === "Escape") { setActiveId(null); setShowKeys(false); }
       if (e.key === "?") setShowKeys((v) => !v);
       if (e.key === "/" && tab === "candidates") { e.preventDefault(); (document.getElementById("candidate-search") as HTMLInputElement | null)?.focus(); }
@@ -331,6 +413,7 @@ export default function App() {
     { id: "candidates", label: s.candidates, icon: <ListChecks size={19} />, count: activeCount },
     { id: "git", label: s.git, icon: <GitBranch size={19} />, count: gitCount },
     { id: "explore", label: s.explore, icon: <LayoutGrid size={19} /> },
+    { id: "routines", label: s.routines, icon: <CalendarClock size={19} />, count: routines.filter((r) => r.enabled).length },
     { id: "history", label: s.history, icon: <HistoryIcon size={19} />, count: recovery.items || history.length },
     { id: "settings", label: s.settings, icon: <SettingsIcon size={19} /> },
   ];
@@ -345,8 +428,10 @@ export default function App() {
     { id: "candidates", label: s.candidates, hint: "2", icon: <ListChecks size={14} />, run: () => setTab("candidates") },
     { id: "git", label: s.git, hint: "3", icon: <GitBranch size={14} />, run: () => setTab("git") },
     { id: "explore", label: s.explore, hint: "4", icon: <LayoutGrid size={14} />, run: () => setTab("explore") },
-    { id: "history", label: s.history, hint: "5", icon: <HistoryIcon size={14} />, run: () => setTab("history") },
-    { id: "settings", label: s.settings, hint: "6", icon: <SettingsIcon size={14} />, run: () => setTab("settings") },
+    { id: "routines", label: s.routines, hint: "5", icon: <CalendarClock size={14} />, run: () => setTab("routines") },
+    { id: "history", label: s.history, hint: "6", icon: <HistoryIcon size={14} />, run: () => setTab("history") },
+    { id: "settings", label: s.settings, hint: "7", icon: <SettingsIcon size={14} />, run: () => setTab("settings") },
+    { id: "integration", label: integration.installed ? s.integrationRemove : s.integrationInstall, icon: <MousePointerClick size={14} />, run: () => toggleIntegration(!integration.installed) },
     { id: "export-md", label: `${s.exportAs} Markdown`, icon: <FileText size={14} />, run: () => exportReport("md") },
     { id: "export-json", label: `${s.exportAs} JSON`, icon: <FileJson size={14} />, run: () => exportReport("json") },
     { id: "export-csv", label: `${s.exportAs} CSV`, icon: <FileSpreadsheet size={14} />, run: () => exportReport("csv") },
@@ -358,7 +443,7 @@ export default function App() {
 
   const shortcuts: Array<[string, string]> = [
     ["⌘/Ctrl K", s.palette],
-    ["1 … 6", lang === "tr" ? "görünüm değiştir" : "switch view"],
+    ["1 … 7", lang === "tr" ? "görünüm değiştir" : "switch view"],
     ["⌘/Ctrl R", s.rescan],
     ["/", lang === "tr" ? "ara" : "search"],
     ["Esc", lang === "tr" ? "detayı kapat" : "close detail"],
@@ -393,6 +478,9 @@ export default function App() {
             <button type="button" className="btn sm quiet" onClick={() => setUpdate(null)}>{s.later}</button>
           </div>
         )}
+        {launch && (
+          <div className="launch"><MousePointerClick size={15} /> {launch.kind === "clean" ? s.launchClean : s.launchScan}: <code>{launch.path}</code></div>
+        )}
         <header className="cmdbar">
           <div className="title">{nav.find((n) => n.id === tab)?.icon}<h1>{nav.find((n) => n.id === tab)?.label}</h1></div>
           {scanning && progress && <div className="scanline"><Loader2 size={13} className="spin" style={{ color: "var(--ember)" }} /><span className="phase">{progress.phase}</span><span className="msg">{progress.message}</span></div>}
@@ -416,11 +504,12 @@ export default function App() {
         </header>
         <section className="content">
           {tab === "overview" && <Overview lang={lang} boot={boot} disk={disk} candidates={candidates} excluded={excluded} selected={selected} volumes={volumes} recovery={recovery} guarded={guarded} scans={scans} onPick={(c) => { setActiveId(c.id); setTab(c.category === "git" ? "git" : "candidates"); }} onPreset={(ids) => { selectMany(ids, true); showToast(`${ids.length} ${s.items} ✓`); }} onExplore={(p) => { setExploreStart(p); setTab("explore"); }} />}
-          {tab === "explore" && apiRef.current && <Explore key={exploreStart ?? "home"} lang={lang} api={apiRef.current} home={exploreStart ?? boot.home} volumes={volumes} onAdd={addManual} onProtect={protectPath} onReveal={reveal} />}
-          {tab === "candidates" && <Candidates lang={lang} home={boot.home} candidates={candidates} excluded={excluded} selected={selected} activeId={activeId} onToggle={toggle} onSelectMany={selectMany} onActivate={setActiveId} onExclude={exclude} onReveal={reveal} onProtect={protectPath} hasScanned={hasScanned} scanning={scanning} />}
-          {tab === "git" && <GitView lang={lang} home={boot.home} candidates={candidates} excluded={excluded} selected={selected} gitEnabled={config.git.enabled} onToggle={toggle} onActivate={(id) => { setActiveId(id); setTab("candidates"); }} />}
+          {tab === "explore" && apiRef.current && <Explore key={exploreStart ?? "home"} lang={lang} api={apiRef.current} home={exploreStart ?? boot.home} volumes={volumes} onAdd={addManual} onProtect={protectPath} onReveal={reveal} onScanHere={scanHere} />}
+          {tab === "candidates" && <Candidates lang={lang} home={boot.home} candidates={candidates} excluded={excluded} selected={selected} activeId={activeId} onToggle={toggle} onSelectMany={selectMany} onActivate={setActiveId} onExclude={exclude} onReveal={reveal} onProtect={protectPath} onCleanOne={cleanOne} hasScanned={hasScanned} scanning={scanning} />}
+          {tab === "routines" && <Routines lang={lang} routines={routines} runs={routineRuns} running={routineRunning} onSave={saveRoutine} onDelete={deleteRoutine} onRun={runRoutine} onTemplates={addTemplates} />}
+          {tab === "git" && <GitView lang={lang} home={boot.home} candidates={candidates} excluded={excluded} selected={selected} gitEnabled={config.git.enabled} onToggle={toggle} onActivate={(id) => { setActiveId(id); setTab("candidates"); }} onCleanOne={cleanOne} />}
           {tab === "history" && <History lang={lang} home={boot.home} history={history} recovery={recovery} onClear={async () => { await apiRef.current?.clearHistory(); setHistory([]); }} onUndo={undoRun} onRestore={restoreEntry} onPurge={purgeRecovery} />}
-          {tab === "settings" && <Settings lang={lang} config={config} configPath={boot.config_path} onSave={saveConfig} />}
+          {tab === "settings" && <Settings lang={lang} config={config} configPath={boot.config_path} onSave={saveConfig} integration={integration} onIntegration={toggleIntegration} />}
         </section>
       </main>
       {modal && (

@@ -12,7 +12,9 @@ use std::time::Duration;
 use cleanprojects_core::cleaner::{self, CleanEvent, CleanMode, CleanOptions};
 use cleanprojects_core::fsutil::{compact_path, human_size};
 use cleanprojects_core::recovery;
+use cleanprojects_core::routine::{self, Routine, RoutineRun};
 use cleanprojects_core::scan::{self, ScanContext, ScanEvent, ScanResult};
+use cleanprojects_core::shell_integration::{self, IntegrationStatus, LaunchAction};
 use cleanprojects_core::ScanSnapshot;
 use cleanprojects_core::{
     disk_for, volumes, Candidate, Config, DiskInfo, HistoryEntry, Journal, Node, Paths, State,
@@ -32,6 +34,9 @@ pub struct AppState {
     scanning: AtomicBool,
     cleaning: AtomicBool,
     tray: Mutex<Option<TrayIcon>>,
+    /// `--scan DIR` / `--clean DIR` received on launch, consumed by the first bootstrap.
+    launch: Mutex<Option<LaunchAction>>,
+    routine_running: AtomicBool,
 }
 
 #[derive(Serialize)]
@@ -55,6 +60,11 @@ struct Bootstrap {
     scanning: bool,
     recovery: RecoverySummary,
     scans: Vec<ScanSnapshot>,
+    launch: Option<LaunchAction>,
+    routines: Vec<Routine>,
+    routine_runs: Vec<RoutineRun>,
+    integration: IntegrationStatus,
+    exe: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -99,6 +109,9 @@ pub struct ScanOptions {
     pub no_extras: bool,
     #[serde(default)]
     pub background: bool,
+    /// Scan only these directories (context-menu launch).
+    #[serde(default)]
+    pub roots: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -207,7 +220,18 @@ fn bootstrap(st: TauriState<AppState>) -> CmdResult<Bootstrap> {
         scanning: st.scanning.load(Ordering::SeqCst),
         recovery: recovery_summary(&st.paths),
         scans: state.scans,
+        launch: st.launch.lock().unwrap().take(),
+        routines: config_routines(&st),
+        routine_runs: state.routine_runs,
+        integration: shell_integration::status(&st.paths.home),
+        exe: std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
     })
+}
+
+fn config_routines(st: &AppState) -> Vec<Routine> {
+    st.config.lock().unwrap().routines.clone()
 }
 
 fn run_scan_thread(app: AppHandle, ctx: ScanContext, background: bool) {
@@ -290,8 +314,18 @@ fn start_scan(
         return Err("a scan is already running".into());
     }
     let options = options.unwrap_or_default();
-    let config = st.config.lock().unwrap().clone();
+    let mut config = st.config.lock().unwrap().clone();
+    if !options.roots.is_empty() {
+        config.scan.default_roots = false;
+        config.scan.roots = options.roots.clone();
+        config.scan.volumes = false;
+    }
     let mut ctx = ScanContext::new(st.paths.home.clone(), config);
+    if !options.roots.is_empty() {
+        ctx.include_global = false;
+        ctx.include_tools = false;
+        ctx.include_extras = false;
+    }
     if options.no_git {
         ctx.include_git = false;
     }
@@ -697,6 +731,118 @@ fn protect_path(app: AppHandle, st: TauriState<AppState>, path: String) -> CmdRe
 }
 
 #[tauri::command]
+fn get_routines(st: TauriState<AppState>) -> (Vec<Routine>, Vec<RoutineRun>) {
+    (
+        config_routines(&st),
+        st.state.lock().unwrap().routine_runs.clone(),
+    )
+}
+
+#[tauri::command]
+fn routine_templates() -> Vec<Routine> {
+    routine::templates()
+}
+
+#[tauri::command]
+fn save_routine(st: TauriState<AppState>, mut routine: Routine) -> CmdResult<Vec<Routine>> {
+    if routine.id.is_empty() {
+        routine.id = routine::new_id();
+    }
+    if routine.mode != "trash" {
+        routine.mode = "recovery".into();
+    }
+    if routine.max_risk > cleanprojects_core::Risk::Medium {
+        routine.max_risk = cleanprojects_core::Risk::Medium;
+    }
+    let mut config = st.config.lock().unwrap().clone();
+    match config.routines.iter_mut().find(|r| r.id == routine.id) {
+        Some(r) => *r = routine,
+        None => config.routines.push(routine),
+    }
+    st.paths.save_config(&config).map_err(err)?;
+    *st.config.lock().unwrap() = config.clone();
+    Ok(config.routines)
+}
+
+#[tauri::command]
+fn delete_routine(st: TauriState<AppState>, id: String) -> CmdResult<Vec<Routine>> {
+    let mut config = st.config.lock().unwrap().clone();
+    config.routines.retain(|r| r.id != id);
+    st.paths.save_config(&config).map_err(err)?;
+    *st.config.lock().unwrap() = config.clone();
+    Ok(config.routines)
+}
+
+fn run_routines_thread(app: AppHandle, routines: Vec<Routine>, dry_run: bool) {
+    std::thread::spawn(move || {
+        let st = app.state::<AppState>();
+        for r in &routines {
+            let config = st.config.lock().unwrap().clone();
+            let mut state = st.state.lock().unwrap().clone();
+            let run = routine::run(&st.paths, &config, &mut state, r, dry_run);
+            *st.state.lock().unwrap() = state;
+            if r.notify && !dry_run {
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title(format!("CleanProjects · {}", r.name))
+                    .body(if run.items == 0 {
+                        "Nothing to clean this time.".to_string()
+                    } else {
+                        format!(
+                            "{} freed ({} items). Undo from History.",
+                            human_size(run.freed),
+                            run.items
+                        )
+                    })
+                    .show();
+            }
+            let _ = app.emit("routine://done", run);
+        }
+        // Reload the cached scan the routine just saved so the window reflects it.
+        if let Some(c) = cleanprojects_core::load_cache(&st.paths.scan_cache_file) {
+            set_tray_title(&app, c.total());
+            *st.last_scan.lock().unwrap() = Some(c);
+        }
+        st.routine_running.store(false, Ordering::SeqCst);
+        let _ = app.emit("candidates://changed", ());
+    });
+}
+
+#[tauri::command]
+fn run_routine(
+    app: AppHandle,
+    st: TauriState<AppState>,
+    id: String,
+    dry_run: Option<bool>,
+) -> CmdResult<()> {
+    let Some(r) = config_routines(&st).into_iter().find(|r| r.id == id) else {
+        return Err("no such routine".into());
+    };
+    if st.routine_running.swap(true, Ordering::SeqCst) {
+        return Err("a routine is already running".into());
+    }
+    run_routines_thread(app, vec![r], dry_run.unwrap_or(false));
+    Ok(())
+}
+
+#[tauri::command]
+fn integration_status(st: TauriState<AppState>) -> IntegrationStatus {
+    shell_integration::status(&st.paths.home)
+}
+
+#[tauri::command]
+fn integration_install(st: TauriState<AppState>) -> CmdResult<IntegrationStatus> {
+    let exe = std::env::current_exe().map_err(err)?;
+    shell_integration::install(&st.paths.home, &exe).map_err(err)
+}
+
+#[tauri::command]
+fn integration_uninstall(st: TauriState<AppState>) -> CmdResult<IntegrationStatus> {
+    shell_integration::uninstall(&st.paths.home).map_err(err)
+}
+
+#[tauri::command]
 fn path_exists(path: String) -> bool {
     PathBuf::from(path).exists()
 }
@@ -752,6 +898,34 @@ fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
         .build(app)
 }
 
+fn start_routine_scheduler(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(300));
+        let st = app.state::<AppState>();
+        if st.scanning.load(Ordering::SeqCst)
+            || st.cleaning.load(Ordering::SeqCst)
+            || st.routine_running.load(Ordering::SeqCst)
+        {
+            continue;
+        }
+        let due: Vec<Routine> = {
+            let config = st.config.lock().unwrap();
+            let state = st.state.lock().unwrap();
+            routine::due(&config, &state, chrono::Local::now())
+                .into_iter()
+                .cloned()
+                .collect()
+        };
+        if due.is_empty() {
+            continue;
+        }
+        if st.routine_running.swap(true, Ordering::SeqCst) {
+            continue;
+        }
+        run_routines_thread(app.clone(), due, false);
+    });
+}
+
 fn start_scheduler(app: AppHandle) {
     std::thread::spawn(move || loop {
         let hours = app
@@ -793,7 +967,10 @@ pub fn run() {
         let _ = paths.save_journal(&journal);
     }
     let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if let Some(action) = shell_integration::parse_launch_args(args) {
+                let _ = app.emit("launch://action", action);
+            }
             show_main(app)
         }))
         .plugin(tauri_plugin_opener::init())
@@ -817,6 +994,8 @@ pub fn run() {
             scanning: AtomicBool::new(false),
             cleaning: AtomicBool::new(false),
             tray: Mutex::new(None),
+            launch: Mutex::new(shell_integration::parse_launch_args(std::env::args())),
+            routine_running: AtomicBool::new(false),
         })
         .setup(|app| {
             let handle = app.handle().clone();
@@ -828,6 +1007,7 @@ pub fn run() {
             let cached_total = st.state.lock().unwrap().last_recoverable;
             set_tray_title(&handle, cached_total);
             start_scheduler(handle.clone());
+            start_routine_scheduler(handle.clone());
             if std::env::args().any(|a| a == "--background") {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
@@ -864,6 +1044,14 @@ pub fn run() {
             write_report,
             large_files,
             protect_path,
+            get_routines,
+            routine_templates,
+            save_routine,
+            delete_routine,
+            run_routine,
+            integration_status,
+            integration_install,
+            integration_uninstall,
             path_exists,
             quit_app
         ])

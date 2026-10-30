@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Bell, FolderSearch, GitBranch, Globe, HardDrive, Monitor, Moon, Recycle, RotateCcw, Save, Settings2, ShieldAlert, Sun, SunMoon, Trash2 } from "lucide-react";
-import type { Config } from "../types";
+import { Bell, FolderSearch, GitBranch, Globe, HardDrive, Monitor, Moon, MousePointerClick, Recycle, RotateCcw, Save, Settings2, ShieldAlert, Sun, SunMoon, Trash2 } from "lucide-react";
+import type { Config, IntegrationStatus } from "../types";
 import type { Lang } from "../i18n";
 import { STRINGS } from "../i18n";
 import { Switch } from "../components/common";
@@ -12,7 +12,7 @@ const DEFAULTS: Config = {
   ui: { language: "en", close_to_tray: true, scan_interval_hours: 24, notify_threshold_gb: 5, check_updates: true, theme: "system" },
 };
 
-export function Settings({ lang, config, configPath, onSave }: { lang: Lang; config: Config; configPath: string; onSave: (c: Config) => Promise<void> }) {
+export function Settings({ lang, config, configPath, onSave, integration, onIntegration }: { lang: Lang; config: Config; configPath: string; onSave: (c: Config) => Promise<void>; integration: IntegrationStatus; onIntegration: (install: boolean) => Promise<void> }) {
   const s = STRINGS[lang];
   const [draft, setDraft] = useState<Config>(config);
   const [saving, setSaving] = useState(false);
@@ -101,6 +101,19 @@ export function Settings({ lang, config, configPath, onSave }: { lang: Lang; con
           <div><label htmlFor="set-notify">{s.notifyThreshold}</label><input id="set-notify" type="number" min={0} value={draft.ui.notify_threshold_gb} onChange={(e) => set("ui", { notify_threshold_gb: num(e.target.value, 0) })} /></div>
         </div>
         <div className="swrow"><Switch id="set-upd" on={draft.ui.check_updates} onChange={(v) => set("ui", { check_updates: v })} /><label htmlFor="set-upd">{s.checkUpdates}</label></div>
+      </div>
+
+      <div className="sec"><MousePointerClick size={13} />{s.integration}</div>
+      <div className="panel field" style={{ gap: 10 }}>
+        <div className="help">{s.integrationHint}</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span className={`chip ${integration.installed ? "on" : "off"}`}>{integration.installed ? "●" : "○"} {integration.installed ? s.integrationInstalled : s.integrationNotInstalled} · {integration.platform}</span>
+          {integration.installed
+            ? <button type="button" className="btn sm" onClick={() => onIntegration(false)}>{s.integrationRemove}</button>
+            : <button type="button" className="btn sm ember" onClick={() => onIntegration(true)}><MousePointerClick size={13} /> {s.integrationInstall}</button>}
+        </div>
+        <div className="help">{integration.note}</div>
+        {integration.locations.map((l) => <code key={l} style={{ color: "var(--ink-3)" }}>{l}</code>)}
       </div>
 
       <div className="form-actions">

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowUp, ChevronRight, FileStack, FolderOpen, FolderPlus, HardDrive, Home, LayoutGrid, List, Loader2, ShieldPlus, Usb } from "lucide-react";
+import { ArrowUp, ChevronRight, FileStack, FolderOpen, FolderPlus, HardDrive, Home, LayoutGrid, List, Loader2, ScanSearch, ShieldPlus, Usb } from "lucide-react";
+import { ContextMenu, openMenu, type MenuState } from "../components/ContextMenu";
 import type { Api } from "../api";
 import type { Node, TreeNode, Volume } from "../types";
 import { compactPath, humanSize } from "../format";
@@ -15,6 +16,7 @@ interface Props {
   onAdd: (path: string) => void;
   onProtect: (path: string) => void;
   onReveal: (path: string) => void;
+  onScanHere: (path: string) => void;
 }
 
 interface Rect { x: number; y: number; w: number; h: number; }
@@ -59,8 +61,18 @@ function squarify(items: { size: number }[], rect: Rect): Rect[] {
 
 const PALETTE = ["var(--cat-project)", "var(--cat-ide)", "var(--cat-container)", "var(--cat-browser)", "var(--cat-packages)", "var(--cat-mobile)", "var(--cat-appdata)", "var(--cat-build)"];
 
-export function Explore({ lang, api, home, volumes, onAdd, onProtect, onReveal }: Props) {
+export function Explore({ lang, api, home, volumes, onAdd, onProtect, onReveal, onScanHere }: Props) {
   const s = STRINGS[lang];
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const nodeMenu = (e: React.MouseEvent, n: { path: string; is_dir: boolean }) =>
+    openMenu(e, [
+      { label: s.ctxOpen, icon: <FolderOpen size={14} />, disabled: !n.is_dir, onClick: () => setDir(n.path) },
+      { label: s.ctxScanHere, icon: <ScanSearch size={14} />, disabled: !n.is_dir, onClick: () => onScanHere(n.path) },
+      { label: s.reveal, icon: <FolderOpen size={14} />, onClick: () => onReveal(n.path) },
+      { separator: true, label: "" },
+      { label: s.addToSelection, icon: <FolderPlus size={14} />, onClick: () => onAdd(n.path) },
+      { label: s.protect, icon: <ShieldPlus size={14} />, disabled: !n.is_dir, onClick: () => onProtect(n.path) },
+    ], setMenu);
   const [dir, setDir] = useState(home);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [list, setList] = useState<Node[]>([]);
@@ -124,6 +136,7 @@ export function Explore({ lang, api, home, volumes, onAdd, onProtect, onReveal }
         </div>
         <button type="button" className="btn sm" onClick={() => setDir(home)}><Home size={13} /> {s.home}</button>
         <button type="button" className="btn sm" onClick={up} disabled={dir === "/" || volumes.some((v) => v.mount === dir)}><ArrowUp size={13} /> {s.up}</button>
+        <button type="button" className="btn sm" onClick={() => onScanHere(dir)}><ScanSearch size={13} /> {s.ctxScanHere}</button>
         <div className="crumbs">
           {crumbs.map((c, i) => (
             <span key={c.path}>{i > 0 && <ChevronRight size={12} />}<button type="button" onClick={() => setDir(c.path)}>{c.name}</button></span>
@@ -145,7 +158,7 @@ export function Explore({ lang, api, home, volumes, onAdd, onProtect, onReveal }
             <p className="help" style={{ color: "var(--ink-3)", fontSize: 12, marginBottom: 10 }}>{s.largeHint}</p>
             <div className="xlist">
               {(large ?? []).map((n) => (
-                <div className="lf-row" key={n.path}>
+                <div className="lf-row" key={n.path} onContextMenu={(e) => nodeMenu(e, n)}>
                   <span className="size">{humanSize(n.size)}</span>
                   <span style={{ minWidth: 0 }}><span className="ln">{n.name}</span><span className="lp">{compactPath(n.path, home)}</span></span>
                   <span className="age">{n.modified ? new Date(n.modified).toLocaleDateString() : ""}</span>
@@ -169,6 +182,7 @@ export function Explore({ lang, api, home, volumes, onAdd, onProtect, onReveal }
                   <rect x={r.x + 1} y={r.y + 1} width={Math.max(0, r.w - 2)} height={Math.max(0, r.h - 2)} rx="6" fill={color} fillOpacity="0.16" stroke={color} strokeWidth="1.5"
                     style={{ cursor: t.is_dir ? "pointer" : "default" }}
                     onClick={() => t.is_dir && setDir(t.path)}
+                    onContextMenu={(e) => nodeMenu(e, t)}
                     onMouseEnter={(e) => tip.show(e, <span>{t.name} · <b>{humanSize(t.size)}</b>{t.is_dir ? ` · ${t.files} ${s.files}` : ""}</span>)} onMouseMove={tip.move} />
                   {r.w > 46 && r.h > 20 && (
                     <text x={r.x + 8} y={r.y + 13} fontSize="11" fontWeight="700" fill="var(--ink)" style={{ pointerEvents: "none" }}>
@@ -181,6 +195,7 @@ export function Explore({ lang, api, home, volumes, onAdd, onProtect, onReveal }
                       <rect x={kr.x + 1} y={kr.y + 1} width={Math.max(0, kr.w - 2)} height={Math.max(0, kr.h - 2)} rx="3" fill={color} fillOpacity="0.35"
                         style={{ cursor: k.is_dir ? "pointer" : "default" }}
                         onClick={(e) => { e.stopPropagation(); if (k.is_dir) setDir(k.path); }}
+                        onContextMenu={(e) => nodeMenu(e, k)}
                         onMouseEnter={(e) => { e.stopPropagation(); tip.show(e, <span>{t.name}/{k.name} · <b>{humanSize(k.size)}</b></span>); }} onMouseMove={tip.move} />
                       {kr.w > 70 && kr.h > 22 && (
                         <text x={kr.x + 7} y={kr.y + 15} fontSize="10.5" fontWeight="600" fill="var(--ink)" style={{ pointerEvents: "none" }}>
@@ -198,7 +213,7 @@ export function Explore({ lang, api, home, volumes, onAdd, onProtect, onReveal }
           {view === "list" && (
             <div className="xlist">
               {list.map((n) => (
-                <div className="xrow" key={n.path} onDoubleClick={() => n.is_dir && setDir(n.path)}>
+                <div className="xrow" key={n.path} onDoubleClick={() => n.is_dir && setDir(n.path)} onContextMenu={(e) => nodeMenu(e, n)}>
                   <span className="xbar"><i style={{ width: `${(n.size / Math.max(1, list[0]?.size ?? 1)) * 100}%` }} /></span>
                   <button type="button" className="xname" onClick={() => n.is_dir && setDir(n.path)} disabled={!n.is_dir}>{n.name}{n.is_dir ? "/" : ""}</button>
                   <span className="xsize num">{humanSize(n.size)}</span>
@@ -213,6 +228,7 @@ export function Explore({ lang, api, home, volumes, onAdd, onProtect, onReveal }
         </div>
       </section>
       {tip.el}
+      <ContextMenu menu={menu} onClose={() => setMenu(null)} />
     </>
   );
 }

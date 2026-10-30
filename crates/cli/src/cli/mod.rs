@@ -114,6 +114,11 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Scheduled cleanups: list, add, run, enable/disable, remove, and OS scheduler install.
+    Routine {
+        #[command(subcommand)]
+        cmd: RoutineCmd,
+    },
     /// Print or install the agent skill (Claude Code, Codex, Cursor) describing how to drive this CLI.
     Skill {
         /// Write the skill into ~/.claude/skills/cleanprojects/SKILL.md.
@@ -186,6 +191,71 @@ pub enum RiskArg {
     #[default]
     Medium,
     High,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RoutineCmd {
+    /// Show routines, their schedule and last run.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add a routine (or print templates with --templates).
+    Add {
+        /// Name of the routine.
+        #[arg(long)]
+        name: Option<String>,
+        /// Schedule: daily@3, weekly@sun@4, monthly@1@5, every@6h.
+        #[arg(long, default_value = "weekly@sun@3")]
+        every: String,
+        /// Highest risk: low or medium.
+        #[arg(long, value_enum, default_value_t = RiskArg::Low)]
+        max_risk: RiskArg,
+        /// Only these categories (repeatable).
+        #[arg(short = 'c', long = "category", value_name = "CAT")]
+        categories: Vec<String>,
+        /// Only artifacts of stale projects.
+        #[arg(long)]
+        stale: bool,
+        /// Only items not modified for at least this many days.
+        #[arg(long, default_value_t = 0)]
+        min_age: u64,
+        /// recovery (default) or trash. Permanent is never allowed for routines.
+        #[arg(long, default_value = "recovery")]
+        mode: String,
+        /// Scan only these roots (repeatable).
+        #[arg(long = "root", value_name = "DIR")]
+        roots: Vec<PathBuf>,
+        /// Create the four built-in templates instead.
+        #[arg(long)]
+        templates: bool,
+    },
+    /// Run a routine by name or id, or every routine that is due (--due).
+    Run {
+        name: Option<String>,
+        #[arg(long)]
+        due: bool,
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    Enable {
+        name: String,
+    },
+    Disable {
+        name: String,
+    },
+    Remove {
+        name: String,
+    },
+    /// Install or remove the OS scheduler entry that runs `cleanprojects routine run --due` hourly.
+    Schedule {
+        #[arg(long)]
+        install: bool,
+        #[arg(long)]
+        uninstall: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]

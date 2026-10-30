@@ -17,7 +17,7 @@
 
 It scans package manager stores, compiler caches, build output inside your projects, IDE and browser caches, container engines and git repositories, then shows everything as a reviewable list with a size, a risk level and an explanation. Nothing is deleted until you select it and confirm.
 
-Version 2 is a complete rewrite in Rust. One engine, three front ends. Version 2.1 added an **undoable recovery bin**, **every mounted disk** (external SSDs included), a **treemap explorer**, a **menu bar watcher** with scheduled scans, git-tracked and running-app guards, and in-app updates. Version 2.2 adds a **disk trend**, **new-since-last-scan** tags, a **largest files** finder, **protect from the UI**, a **command palette**, keyboard navigation, themes and JSON/CSV reports.
+Version 2 is a complete rewrite in Rust. One engine, three front ends. Version 2.1 added an **undoable recovery bin**, **every mounted disk** (external SSDs included), a **treemap explorer**, a **menu bar watcher** with scheduled scans, git-tracked and running-app guards, and in-app updates. Version 2.2 adds a **disk trend**, **new-since-last-scan** tags, a **largest files** finder, **protect from the UI**, a **command palette**, keyboard navigation, themes and JSON/CSV reports. Version 2.3 adds **routines** (scheduled cleanups), **right-click integration** with Finder, Explorer and Linux file managers, and in-app context menus.
 
 | Front end | What it is | Best for |
 |-----------|------------|----------|
@@ -89,6 +89,30 @@ Every scan records recoverable and free space, so the Overview shows where the d
   <img src="docs/images/app-trend.png" alt="Disk trend and volumes in dark theme" width="49%">
 </p>
 
+## Routines
+
+A routine is a scheduled cleanup with a name, a schedule (daily, weekly, monthly or every N hours), a risk cap (low or medium, never high), optional categories, a stale-only switch, a minimum age and optional folders. Routines always use the recovery bin or the trash, never permanent deletion, and skip data of running applications, so a run is always undoable from History. The desktop app runs due routines while it is open or sitting in the tray and notifies you with the result. The Routines tab offers four templates: weekly safe sweep, monthly stale projects, daily build caches, browser and temp every 6 hours.
+
+From the terminal:
+
+```bash
+cleanprojects routine add --templates
+cleanprojects routine add --name "Docker nightly" --every daily@2 --category container
+cleanprojects routine list
+cleanprojects routine run "Docker nightly" --dry-run
+cleanprojects routine run --due               # whatever is due now
+cleanprojects routine schedule --install      # hourly launchd agent / systemd user timer / Windows task
+```
+
+## Right-click integration
+
+Settings › *File manager integration* adds **Scan with CleanProjects** and **Clean with CleanProjects** to the right-click menu of folders: Finder Quick Actions on macOS, Explorer context menu on Windows (per-user registry keys, no admin), Nautilus scripts and a KDE/Dolphin service menu on Linux. *Scan* opens the app with only that folder scanned; *Clean* additionally preselects every low-risk item and opens the confirmation. The same works from the terminal with `CleanProjects --scan DIR` or `--clean DIR`, and a running instance picks the request up. Inside the app, rows, treemap blocks and files have context menus (select, details, reveal, clean only this, exclude, protect, scan this folder).
+
+<p align="center">
+  <img src="docs/images/app-routines.png" alt="Routines" width="49%">
+  <img src="docs/images/app-context-menu.png" alt="Context menu on a candidate" width="49%">
+</p>
+
 ## Menu bar, schedule, updates
 
 The desktop app keeps running in the menu bar / system tray when its window is closed (configurable). It rescans in the background every 24 hours (configurable), shows the recoverable size next to the tray icon on macOS, and sends a notification when more than 5 GB can be reclaimed. Launch at login is enabled together with the tray. Updates are checked on launch and installed in place when the release carries signed updater artifacts.
@@ -146,6 +170,30 @@ Every scan records recoverable and free space, so the Overview shows where the d
   <img src="docs/images/app-trend.png" alt="Disk trend and volumes in dark theme" width="49%">
 </p>
 
+## Routines
+
+A routine is a scheduled cleanup with a name, a schedule (daily, weekly, monthly or every N hours), a risk cap (low or medium, never high), optional categories, a stale-only switch, a minimum age and optional folders. Routines always use the recovery bin or the trash, never permanent deletion, and skip data of running applications, so a run is always undoable from History. The desktop app runs due routines while it is open or sitting in the tray and notifies you with the result. The Routines tab offers four templates: weekly safe sweep, monthly stale projects, daily build caches, browser and temp every 6 hours.
+
+From the terminal:
+
+```bash
+cleanprojects routine add --templates
+cleanprojects routine add --name "Docker nightly" --every daily@2 --category container
+cleanprojects routine list
+cleanprojects routine run "Docker nightly" --dry-run
+cleanprojects routine run --due               # whatever is due now
+cleanprojects routine schedule --install      # hourly launchd agent / systemd user timer / Windows task
+```
+
+## Right-click integration
+
+Settings › *File manager integration* adds **Scan with CleanProjects** and **Clean with CleanProjects** to the right-click menu of folders: Finder Quick Actions on macOS, Explorer context menu on Windows (per-user registry keys, no admin), Nautilus scripts and a KDE/Dolphin service menu on Linux. *Scan* opens the app with only that folder scanned; *Clean* additionally preselects every low-risk item and opens the confirmation. The same works from the terminal with `CleanProjects --scan DIR` or `--clean DIR`, and a running instance picks the request up. Inside the app, rows, treemap blocks and files have context menus (select, details, reveal, clean only this, exclude, protect, scan this folder).
+
+<p align="center">
+  <img src="docs/images/app-routines.png" alt="Routines" width="49%">
+  <img src="docs/images/app-context-menu.png" alt="Context menu on a candidate" width="49%">
+</p>
+
 ## Menu bar, schedule, updates
 
 The desktop app keeps running in the menu bar / system tray when its window is closed (configurable). It rescans in the background every 24 hours (configurable), shows the recoverable size next to the tray icon on macOS, and sends a notification when more than 5 GB can be reclaimed. Launch at login is enabled together with the tray. Updates are checked on launch and installed in place when the release carries signed updater artifacts.
@@ -201,6 +249,7 @@ cleanprojects            # opens the TUI and starts scanning
 | `f` `c` `v` `s` | cycle risk, category, view, sort |
 | `i` | detail panel |
 | `t` | cycle recovery bin / trash / permanent |
+| `5` / `6` / `7` (desktop) | Routines / History / Settings |
 | `u` | in History: restore the selected run |
 | `d` / `Enter` | clean selected (asks for confirmation, `d` inside toggles dry run) |
 | `E` | export a Markdown report to your home directory |

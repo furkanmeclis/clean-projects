@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, Calendar, ChevronDown, EyeOff, FileText, Fingerprint, FolderGit2, FolderOpen, FolderSearch, Hourglass, Info, Layers, ListFilter, Lock, RotateCcw, Search, ShieldPlus, Sparkles, SquareCheckBig, SquareDashed, Usb, X } from "lucide-react";
 import { useEffect } from "react";
+import { ContextMenu, openMenu, type MenuState } from "../components/ContextMenu";
+import { Trash2, SquareCheck } from "lucide-react";
 import type { Candidate, Category, Risk } from "../types";
 import { CATEGORIES, actionDisplay, actionPath } from "../types";
 import { ageDays, ageLabel, compactPath, formatDate, humanSize } from "../format";
@@ -24,6 +26,7 @@ interface Props {
   onExclude: (id: string) => void;
   onReveal: (path: string) => void;
   onProtect: (path: string) => void;
+  onCleanOne: (id: string) => void;
   hasScanned: boolean;
   scanning: boolean;
 }
@@ -39,6 +42,22 @@ export function Candidates(p: Props) {
   const [staleOnly, setStaleOnly] = useState(false);
   const [newOnly, setNewOnly] = useState(false);
   const [cursor, setCursor] = useState<number>(-1);
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const rowMenu = (e: React.MouseEvent, c: Candidate) => {
+    const isSel = p.selected.has(c.id);
+    const isEx = p.excluded.has(c.id);
+    const path = actionPath(c.action);
+    openMenu(e, [
+      { label: isSel ? s.ctxDeselect : s.ctxSelect, icon: <SquareCheck size={14} />, disabled: isEx, onClick: () => p.onToggle(c.id) },
+      { label: s.ctxDetails, icon: <Info size={14} />, onClick: () => p.onActivate(c.id) },
+      { label: s.reveal, icon: <FolderOpen size={14} />, disabled: !path, onClick: () => path && p.onReveal(path) },
+      { separator: true, label: "" },
+      { label: s.ctxCleanThis, icon: <Trash2 size={14} />, disabled: isEx || !!c.blocked_by, onClick: () => p.onCleanOne(c.id) },
+      { separator: true, label: "" },
+      { label: isEx ? s.restore : s.exclude, icon: isEx ? <RotateCcw size={14} /> : <EyeOff size={14} />, onClick: () => p.onExclude(c.id) },
+      { label: s.protect, icon: <ShieldPlus size={14} />, disabled: c.action.type !== "remove-path", onClick: () => c.action.type === "remove-path" && p.onProtect(c.action.path) },
+    ], setMenu);
+  };
   const [showExcluded, setShowExcluded] = useState(false);
   const [sort, setSort] = useState<SortKey>("size");
   const [desc, setDesc] = useState(true);
@@ -199,7 +218,7 @@ export function Candidates(p: Props) {
             const rowIndex = visible.indexOf(c);
             return (
               <div key={c.id} data-row-index={rowIndex} className={`trow risk-${c.risk} ${isSel ? "sel" : ""} ${isEx ? "ex" : ""} ${p.activeId === c.id || cursor === rowIndex ? "cur" : ""}`}
-                onClick={() => { setCursor(rowIndex); if (!isEx) p.onToggle(c.id); }} onDoubleClick={() => p.onActivate(c.id)}>
+                onClick={() => { setCursor(rowIndex); if (!isEx) p.onToggle(c.id); }} onDoubleClick={() => p.onActivate(c.id)} onContextMenu={(e) => { setCursor(rowIndex); rowMenu(e, c); }}>
                 <span onClick={(e) => { e.stopPropagation(); if (!isEx) p.onToggle(c.id); }}><CheckBox checked={isSel} /></span>
                 <span className="cico" style={{ background: CATEGORY_VAR[c.category] }}><I size={15} /></span>
                 <div className="cell">
@@ -229,6 +248,7 @@ export function Candidates(p: Props) {
             </div>
           )}
         </div>
+        <ContextMenu menu={menu} onClose={() => setMenu(null)} />
         {active && <Detail c={active} lang={p.lang} home={p.home} excluded={p.excluded.has(active.id)} onClose={() => p.onActivate(null)} onExclude={() => p.onExclude(active.id)} onReveal={p.onReveal} onProtect={p.onProtect} />}
       </div>
     </>

@@ -13,6 +13,8 @@ pub use core::fsutil;
 pub use core::i18n::{Lang, Strings};
 pub use core::recovery::{self as recovery, Journal, RecoveryEntry};
 pub use core::report::{self as report, Format as ReportFormat};
+pub use core::routine::{self as routine, Routine, RoutineRun, Schedule};
+pub use core::shell_integration::{self as shell_integration, IntegrationStatus, LaunchAction};
 pub use core::state::ScanSnapshot;
 pub use core::state::{Config, HistoryEntry, HistoryItem, Paths, State};
 pub use scan::tree::{large_files, list_dir, tree, Node, TreeNode};

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.0
+
+### Added
+- Routines: named scheduled cleanups (daily, weekly, monthly or every N hours) with risk cap, categories, stale-only, minimum age and optional folders. They never delete permanently, never touch high-risk items and skip data of running applications. Desktop: Routines tab with templates, editor, run-now and run log; the app runs due routines while open or in the tray. CLI: `cleanprojects routine list|add|run|enable|disable|remove`, `routine run --due`, and `routine schedule --install` which registers an hourly launchd agent, systemd user timer or Windows scheduled task.
+- File manager integration: "Scan with CleanProjects" and "Clean with CleanProjects" in the right-click menu of folders (Finder Quick Actions, Explorer registry entries, Nautilus scripts and KDE service menu), installed from Settings or the command palette. The app accepts `--scan DIR` and `--clean DIR`; a running instance receives them too.
+- In-app context menus on candidate rows, git rows, explorer blocks, list rows and largest files: select, details, reveal, clean only this, exclude, protect, scan this folder.
+- "Scan this folder" from the explorer toolbar.
+
 ## 2.2.0
 
 ### Added
