@@ -542,7 +542,15 @@ pub fn walk(opts: &WalkOptions, mut on_dir: impl FnMut(&Path)) -> (Vec<Project>,
 }
 
 fn dedupe_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
-    let mut sorted: Vec<PathBuf> = roots.iter().filter(|r| r.is_dir()).cloned().collect();
+    // Canonicalize so that `Projects` and `projects` on a case-insensitive
+    // filesystem (macOS, Windows) collapse into one root instead of being
+    // walked twice under two spellings.
+    let mut sorted: Vec<PathBuf> = roots
+        .iter()
+        .filter(|r| r.is_dir())
+        .map(|r| fs::canonicalize(r).unwrap_or_else(|_| r.clone()))
+        .map(strip_verbatim)
+        .collect();
     sorted.sort();
     sorted.dedup();
     let mut out: Vec<PathBuf> = Vec::new();
@@ -552,6 +560,15 @@ fn dedupe_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// `fs::canonicalize` on Windows yields `\\?\C:\...`; keep paths readable.
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if cfg!(windows) => PathBuf::from(rest),
+        _ => p,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -847,6 +864,6 @@ mod tests {
         let b = a.join("b");
         fs::create_dir_all(&b).unwrap();
         let out = dedupe_roots(&[b.clone(), a.clone(), a.clone(), tmp.path().join("missing")]);
-        assert_eq!(out, vec![a]);
+        assert_eq!(out, vec![fs::canonicalize(&a).unwrap()]);
     }
 }
